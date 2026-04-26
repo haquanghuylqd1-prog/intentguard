@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">IntentGuard</string>
+    <string name="accessibility_service_label">IntentGuard – Kiểm soát thời gian</string>
+    <string name="accessibility_service_description">IntentGuard cần quyền Accessibility để phát hiện khi bạn mở các app giải trí và hiện popup nhắc nhở mục đích sử dụng.</string>
+</resources>
