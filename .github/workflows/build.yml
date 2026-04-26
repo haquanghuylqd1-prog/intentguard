@@ -24,6 +24,38 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Generate placeholder icons
+        run: |
+          python3 -c "
+          import struct, zlib, os
+
+          def create_png(size, color=(98, 0, 238)):
+              def chunk(name, data):
+                  c = zlib.crc32(name + data) & 0xffffffff
+                  return struct.pack('>I', len(data)) + name + data + struct.pack('>I', c)
+              raw = b''
+              for y in range(size):
+                  raw += b'\x00'
+                  for x in range(size):
+                      raw += bytes(color) + b'\xff'
+              compressed = zlib.compress(raw)
+              png = b'\x89PNG\r\n\x1a\n'
+              png += chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0))
+              png += chunk(b'IDAT', compressed)
+              png += chunk(b'IEND', b'')
+              return png
+
+          sizes = {'mipmap-mdpi': 48, 'mipmap-hdpi': 72, 'mipmap-xhdpi': 96, 'mipmap-xxhdpi': 144, 'mipmap-xxxhdpi': 192}
+          for folder, size in sizes.items():
+              path = f'app/src/main/res/{folder}'
+              os.makedirs(path, exist_ok=True)
+              with open(f'{path}/ic_launcher.png', 'wb') as f:
+                  f.write(create_png(size))
+              with open(f'{path}/ic_launcher_round.png', 'wb') as f:
+                  f.write(create_png(size))
+          print('Icons generated!')
+          "
+
       - name: Download Gradle
         run: |
           curl -sL https://services.gradle.org/distributions/gradle-8.2-bin.zip -o gradle.zip
