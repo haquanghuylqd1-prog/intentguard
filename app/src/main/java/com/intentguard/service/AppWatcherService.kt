@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.inputmethod.InputMethodManager
 import com.intentguard.data.DataStore
 import com.intentguard.ui.IntentionPopupActivity
 import java.text.SimpleDateFormat
@@ -29,16 +30,20 @@ class AppWatcherService : AccessibilityService() {
     private var popupShownForPkg = ""
     private var lastPopupTime = 0L
     private var lastScannedUrl = ""
-    private val POPUP_COOLDOWN_MS = 3000L
+    // Thời điểm overlay bị dismiss mà user chưa điền xong
+    private var overlayDismissedWhileBrowserActive = false
+    private val POPUP_COOLDOWN_MS = 2000L
 
     private lateinit var blockingOverlay: BlockingOverlayManager
     private val handler = Handler(Looper.getMainLooper())
 
-    // Periodic scan mỗi 500ms để detect URL trong browser
+    // Periodic scan mỗi 500ms: detect URL + đảm bảo overlay luôn hiện khi cần
     private val urlScanRunnable = object : Runnable {
         override fun run() {
             if (lastForegroundPkg == BROWSER_PKG) {
                 scanBrowserUrl()
+                // Nếu overlay bị dismiss mà browser vẫn foreground → hiện lại ngay
+                ensureBrowserOverlayShowing()
             }
             handler.postDelayed(this, 500)
         }
@@ -56,13 +61,12 @@ class AppWatcherService : AccessibilityService() {
 
             if (root != null) {
                 root.recycle()
-                DebugLog.add("🌐 Browser active window OK (retry #$browserDetectRetryCount) — show popup")
+                DebugLog.add("🌐 Browser active window OK (retry #$browserDetectRetryCount)")
                 triggerBrowserPopup()
             } else if (browserDetectRetryCount < 10) {
                 DebugLog.add("⚠️ rootInActiveWindow = null (retry #$browserDetectRetryCount)")
                 handler.postDelayed(this, 400)
             } else {
-                // Sau 10 lần retry (~4s) vẫn null → force show popup
                 DebugLog.add("⚠️ rootInActiveWindow null x10 — force show browser popup")
                 triggerBrowserPopup()
             }
@@ -82,6 +86,17 @@ class AppWatcherService : AccessibilityService() {
         const val BROWSER_PKG = "com.sec.android.app.sbrowser"
     }
 
+    /**
+     * Kiểm tra package có phải keyboard/IME không.
+     * Nếu phải → bỏ qua, không dismiss overlay.
+     */
+    private fun isInputMethodPackage(pkg: String): Boolean {
+        return try {
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.enabledInputMethodList?.any { it.packageName == pkg } == true
+        } catch (e: Exception) { false }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
@@ -95,24 +110,26 @@ class AppWatcherService : AccessibilityService() {
         val pkg = event.packageName?.toString() ?: return
         if (pkg == packageName || pkg == "com.android.systemui") return
 
+        // Bỏ qua event từ keyboard/IME — không để nó dismiss overlay
+        if (isInputMethodPackage(pkg)) return
+
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 handleForegroundChange(pkg)
                 if (pkg == BROWSER_PKG) {
-                    // Reset cache khi có tab/window change trong browser
                     lastScannedUrl = ""
                     handler.postDelayed({ scanBrowserUrl() }, 300)
                     handler.postDelayed({ scanBrowserUrl() }, 800)
                 }
             }
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
-                // Android 8+ — bắt được cả khi resume từ background
                 try {
                     val focusedPkg = windows?.firstOrNull { it.isFocused }
                         ?.root?.packageName?.toString()
                     if (focusedPkg != null &&
                         focusedPkg != packageName &&
                         focusedPkg != "com.android.systemui" &&
+                        !isInputMethodPackage(focusedPkg) &&
                         focusedPkg != lastForegroundPkg) {
                         handleForegroundChange(focusedPkg)
                         if (focusedPkg == BROWSER_PKG) {
@@ -126,9 +143,12 @@ class AppWatcherService : AccessibilityService() {
     }
 
     private fun handleForegroundChange(pkg: String) {
-        // Dismiss overlay nếu thoát khỏi browser
+        // Chỉ dismiss overlay khi user THẬT SỰ rời khỏi browser
+        // (không dismiss khi keyboard xuất hiện — đã lọc ở trên)
         if (pkg != BROWSER_PKG && ::blockingOverlay.isInitialized && blockingOverlay.isShowing) {
+            DebugLog.add("📱 Rời browser → dismiss overlay")
             blockingOverlay.dismiss()
+            overlayDismissedWhileBrowserActive = false
         }
 
         if (pkg == lastForegroundPkg) return
@@ -148,9 +168,23 @@ class AppWatcherService : AccessibilityService() {
     }
 
     /**
-     * Gọi mỗi khi Samsung Internet vào foreground.
-     * Luôn show popup trừ khi đang có timer chạy.
+     * Đảm bảo overlay luôn hiện khi browser foreground mà chưa có timer.
+     * Được gọi từ periodic scan (mỗi 500ms).
      */
+    private fun ensureBrowserOverlayShowing() {
+        if (TimerService.isRunningFor(BROWSER_PKG)) return
+        if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
+
+        // Overlay không hiện mà browser đang active → hiện lại
+        val now = System.currentTimeMillis()
+        if (now - lastPopupTime < 1000L) return // tránh spam quá nhanh
+
+        DebugLog.add("🔄 ensureBrowserOverlay: overlay không hiện → re-show")
+        lastPopupTime = now
+        popupShownForPkg = BROWSER_PKG
+        triggerBrowserPopup()
+    }
+
     private fun onBrowserForegrounded() {
         if (TimerService.isRunningFor(BROWSER_PKG)) {
             DebugLog.add("🌐 Browser foregrounded — timer đang chạy, skip")
@@ -180,7 +214,7 @@ class AppWatcherService : AccessibilityService() {
         if (TimerService.isRunningFor(BROWSER_PKG)) return
         if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
         handler.post {
-            DebugLog.add("✅ URL OK, showing browser popup")
+            DebugLog.add("✅ Showing browser popup")
             blockingOverlay.show(DataStore.getAppName(this, BROWSER_PKG), BROWSER_PKG, null)
         }
     }
@@ -281,6 +315,7 @@ class AppWatcherService : AccessibilityService() {
     fun resetPopupState() {
         popupShownForPkg = ""
         lastScannedUrl = ""
+        lastPopupTime = 0L
     }
 
     override fun onInterrupt() {}
