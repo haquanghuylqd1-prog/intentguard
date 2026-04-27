@@ -1,7 +1,10 @@
 package com.intentguard.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -12,14 +15,42 @@ class AppWatcherService : AccessibilityService() {
 
     private var lastPackage = ""
     private var popupShownFor = ""
+    private var lastBlockedUrl = ""
     private var lastCheckedUrl = ""
 
-    // Domains/keywords 18+ và truyện
+    private val handler = Handler(Looper.getMainLooper())
+    private val urlCheckRunnable = object : Runnable {
+        override fun run() {
+            if (lastPackage == BROWSER_PKG && !TimerService.isRunningFor(BROWSER_PKG)) {
+                checkUrlFromWindowContent()
+            }
+            handler.postDelayed(this, 1500)
+        }
+    }
+
     private val blockedKeywords = listOf(
-        "truyen", "truyện", "xvideo", "xnxx", "pornhub", "xhamster",
-        "redtube", "youporn", "sex", "porn", "adult", "18+", "hentai",
-        "nhentai", "hanime", "javhd", "jav", "av0"
+        "truyen", "truy\u1ec7n", "manga", "comic",
+        "xvideo", "xnxx", "pornhub", "xhamster", "redtube",
+        "youporn", "sex", "porn", "adult", "hentai",
+        "nhentai", "hanime", "javhd", "jav", "18+",
+        "erome", "spankbang", "tnaflix", "sexvid"
     )
+
+    companion object {
+        var instance: AppWatcherService? = null
+        const val BROWSER_PKG = "com.sec.android.app.sbrowser"
+    }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        instance = this
+        // Enable content retrieval at runtime too
+        val info = serviceInfo
+        info.flags = info.flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+        serviceInfo = info
+        handler.postDelayed(urlCheckRunnable, 2000)
+        Log.d("IntentGuard", "Service connected")
+    }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event ?: return
@@ -27,11 +58,27 @@ class AppWatcherService : AccessibilityService() {
         if (pkg == packageName || pkg == "com.android.systemui") return
 
         when (event.eventType) {
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> handleAppSwitch(pkg)
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                handleAppSwitch(pkg)
+                // Also check URL from event text (Samsung Internet passes URL here)
+                if (pkg == BROWSER_PKG) {
+                    val eventTexts = event.text?.joinToString(" ") ?: ""
+                    val desc = event.contentDescription?.toString() ?: ""
+                    checkTextForBlockedContent("$eventTexts $desc")
+                }
+            }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                // Check URL bar changes in Samsung Internet
-                if (pkg == "com.sec.android.app.sbrowser") {
-                    checkBrowserUrl(event)
+                if (pkg == BROWSER_PKG && !TimerService.isRunningFor(BROWSER_PKG)) {
+                    // Check event text directly — fast path
+                    val texts = event.text?.joinToString(" ") ?: ""
+                    if (texts.isNotEmpty()) checkTextForBlockedContent(texts)
+                }
+            }
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
+                // Catch URL being typed
+                if (pkg == BROWSER_PKG) {
+                    val text = event.text?.joinToString(" ") ?: ""
+                    checkTextForBlockedContent(text)
                 }
             }
         }
@@ -44,68 +91,81 @@ class AppWatcherService : AccessibilityService() {
         if (popupShownFor == pkg && TimerService.isRunningFor(pkg)) return
 
         DataStore.checkAndRotateWeek(this)
-        Log.d("IntentGuard", "Watched app opened: $pkg")
         popupShownFor = pkg
         showPopup(pkg, DataStore.getAppName(this, pkg))
     }
 
-    private fun checkBrowserUrl(event: AccessibilityEvent) {
-        // Only check if no active timer for browser
-        val browserPkg = "com.sec.android.app.sbrowser"
-        if (TimerService.isRunningFor(browserPkg)) return
+    private fun checkTextForBlockedContent(text: String) {
+        if (TimerService.isRunningFor(BROWSER_PKG)) return
+        val lower = text.lowercase()
+        val isBlocked = blockedKeywords.any { lower.contains(it) }
+        if (isBlocked && text != lastBlockedUrl) {
+            lastBlockedUrl = text
+            Log.d("IntentGuard", "Blocked content detected in: $text")
+            popupShownFor = ""
+            showPopup(BROWSER_PKG, "Samsung Internet ⚠️")
+        }
+    }
 
+    private fun checkUrlFromWindowContent() {
         try {
             val root = rootInActiveWindow ?: return
-            val url = extractUrlFromBrowser(root) ?: return
+            val url = extractUrl(root)
             root.recycle()
-
-            if (url == lastCheckedUrl) return
+            if (url == null || url == lastCheckedUrl) return
             lastCheckedUrl = url
-
-            val urlLower = url.lowercase()
-            val isBlocked = blockedKeywords.any { keyword -> urlLower.contains(keyword) }
-
-            if (isBlocked) {
-                Log.d("IntentGuard", "Blocked URL detected: $url")
-                popupShownFor = ""
-                showPopup(browserPkg, "Samsung Internet ⚠️")
-            }
+            Log.d("IntentGuard", "Periodic URL check: $url")
+            checkTextForBlockedContent(url)
         } catch (e: Exception) {
-            Log.e("IntentGuard", "URL check error: ${e.message}")
+            Log.e("IntentGuard", "Periodic check error: ${e.message}")
         }
     }
 
-    private fun extractUrlFromBrowser(root: AccessibilityNodeInfo): String? {
-        // Samsung Internet URL bar resource IDs
-        val urlBarIds = listOf(
-            "com.sec.android.app.sbrowser:id/location_bar_edit_text",
-            "com.sec.android.app.sbrowser:id/url_bar",
-            "com.sec.android.app.sbrowser:id/location"
+    private fun extractUrl(root: AccessibilityNodeInfo): String? {
+        // Try known Samsung Internet URL bar IDs
+        val ids = listOf(
+            "$BROWSER_PKG:id/location_bar_edit_text",
+            "$BROWSER_PKG:id/url_bar",
+            "$BROWSER_PKG:id/location",
+            "$BROWSER_PKG:id/search_edit_text",
+            "$BROWSER_PKG:id/urlbar_text"
         )
-        for (resId in urlBarIds) {
-            val nodes = root.findAccessibilityNodeInfosByViewId(resId)
-            if (nodes.isNotEmpty()) {
-                val text = nodes[0].text?.toString()
-                nodes.forEach { it.recycle() }
-                if (!text.isNullOrEmpty()) return text
-            }
+        for (id in ids) {
+            try {
+                val nodes = root.findAccessibilityNodeInfosByViewId(id)
+                if (nodes.isNotEmpty()) {
+                    val text = nodes[0].text?.toString()
+                    nodes.forEach { it.recycle() }
+                    if (!text.isNullOrEmpty()) return text
+                }
+            } catch (e: Exception) { /* try next */ }
         }
-        // Fallback: search all nodes for URL-like text
-        return findUrlInNodes(root)
+        // Fallback: scan all nodes for URL-like content
+        return scanNodesForUrl(root)
     }
 
-    private fun findUrlInNodes(node: AccessibilityNodeInfo): String? {
-        val text = node.text?.toString()
-        if (!text.isNullOrEmpty() && (text.startsWith("http") || text.contains("www."))) {
+    private fun scanNodesForUrl(node: AccessibilityNodeInfo): String? {
+        val text = node.text?.toString() ?: ""
+        if (text.length > 4 && (
+            text.startsWith("http") ||
+            text.startsWith("www.") ||
+            (text.contains(".") && !text.contains(" ") && text.length < 200)
+        )) {
             return text
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val result = findUrlInNodes(child)
+            val result = scanNodesForUrl(child)
             child.recycle()
             if (result != null) return result
         }
         return null
+    }
+
+    fun resetPopupState() {
+        popupShownFor = ""
+        lastBlockedUrl = ""
+        lastCheckedUrl = ""
     }
 
     private fun showPopup(pkg: String, appName: String) {
@@ -117,27 +177,11 @@ class AppWatcherService : AccessibilityService() {
         startActivity(intent)
     }
 
-    override fun onInterrupt() {
-        Log.d("IntentGuard", "AccessibilityService interrupted")
-    }
-
-    fun resetPopupState() {
-        popupShownFor = ""
-        lastCheckedUrl = ""
-    }
-
-    companion object {
-        var instance: AppWatcherService? = null
-    }
-
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        instance = this
-        Log.d("IntentGuard", "AppWatcherService connected")
-    }
+    override fun onInterrupt() {}
 
     override fun onDestroy() {
         super.onDestroy()
+        handler.removeCallbacks(urlCheckRunnable)
         instance = null
     }
 }
