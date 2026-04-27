@@ -14,6 +14,7 @@ import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.intentguard.R
 import com.intentguard.data.DataStore
+import com.intentguard.service.DebugLog
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -67,6 +68,23 @@ class MainActivity : AppCompatActivity() {
                 DataStore.setWeeklyReductionMinutes(this, minutes)
                 refreshStats()
             }
+        }
+
+        // Debug log buttons
+        findViewById<Button>(R.id.btnRefreshLog).setOnClickListener { refreshDebugLog() }
+        findViewById<Button>(R.id.btnClearLog).setOnClickListener {
+            DebugLog.clear()
+            refreshDebugLog()
+        }
+    }
+
+    private fun refreshDebugLog() {
+        val logs = DebugLog.logs
+        val tv = findViewById<TextView>(R.id.tvDebugLog)
+        if (logs.isEmpty()) {
+            tv.text = "(chưa có log — mở Samsung Internet rồi quay lại bấm Refresh)"
+        } else {
+            tv.text = logs.take(30).joinToString("\n")
         }
     }
 
