@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#CC000000">
+
+    <androidx.cardview.widget.CardView
+        xmlns:app="http://schemas.android.com/apk/res-auto"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:layout_margin="24dp"
+        app:cardCornerRadius="16dp"
+        app:cardElevation="8dp"
+        app:cardBackgroundColor="#FFFFFF">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="24dp"
+            android:gravity="center">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🔒"
+                android:textSize="48sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Giờ nghỉ giải trí!"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:textColor="#212121"
+                android:gravity="center"
+                android:layout_marginTop="8dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Bro vừa xài hết thời gian giải trí rồi.\nHãy tập trung làm việc nhé! 💪"
+                android:textSize="14sp"
+                android:textColor="#757575"
+                android:gravity="center"
+                android:layout_marginTop="8dp" />
+
+            <TextView
+                android:id="@+id/tvCooldownTime"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Còn lại: 60 phút"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="#E53935"
+                android:gravity="center"
+                android:layout_marginTop="16dp"
+                android:background="#FFF3E0"
+                android:padding="12dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Muốn chuyển sang trang làm việc?"
+                android:textSize="14sp"
+                android:textColor="#212121"
+                android:textStyle="bold"
+                android:layout_marginTop="20dp" />
+
+            <EditText
+                android:id="@+id/etWorkUrl"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="VD: netlify.app, google.com, ..."
+                android:textSize="14sp"
+                android:textColor="#212121"
+                android:textColorHint="#9E9E9E"
+                android:inputType="textUri"
+                android:background="#F5F5F5"
+                android:padding="10dp"
+                android:layout_marginTop="8dp" />
+
+            <Button
+                android:id="@+id/btnSwitchUrl"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:text="Chuyển sang trang này ✓"
+                android:textSize="15sp"
+                android:layout_marginTop="12dp"
+                android:backgroundTint="#43A047" />
+
+            <Button
+                android:id="@+id/btnGoHome"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Về màn hình chính"
+                android:textColor="#757575"
+                android:layout_marginTop="4dp" />
+
+        </LinearLayout>
+    </androidx.cardview.widget.CardView>
+</FrameLayout>

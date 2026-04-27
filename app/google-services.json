@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "48291122835",
+    "project_id": "practice-speaking-coach",
+    "storage_bucket": "practice-speaking-coach.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:48291122835:android:6c759a677090bcff1ac766",
+        "android_client_info": {
+          "package_name": "com.intentguard"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC8SoSU4WvSyGUaKjYT5wrLTbX44J8_m-w"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

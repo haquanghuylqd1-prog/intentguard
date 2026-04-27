@@ -227,3 +227,45 @@ object DataStore {
         }
     }
 }
+
+    // ── Entertain target ──────────────────────────────────────────────────────
+    private const val KEY_ENTERTAIN_TARGET = "entertain_target_minutes"
+
+    fun getEntertainTargetMinutes(context: Context): Int =
+        prefs(context).getInt(KEY_ENTERTAIN_TARGET, 30) // default 30p/ngày
+
+    fun setEntertainTargetMinutes(context: Context, minutes: Int) {
+        prefs(context).edit().putInt(KEY_ENTERTAIN_TARGET, minutes).apply()
+    }
+
+    // ── Session classification ────────────────────────────────────────────────
+    private val entertainKeywords = listOf(
+        "truyen", "truyện", "manga", "manhwa", "comic",
+        "giải trí", "xem phim", "đọc truyện",
+        "porn", "sex", "hentai", "⚠️"
+    )
+
+    fun isEntertainSession(session: Session): Boolean {
+        val lower = session.intention.lowercase()
+        return entertainKeywords.any { lower.contains(it) } ||
+               session.appPackage in listOf("com.facebook.katana","com.facebook.lite","com.google.android.youtube")
+    }
+
+    // ── Day stats ─────────────────────────────────────────────────────────────
+    fun getSessionsForDay(context: Context, dayStartMs: Long): List<Session> {
+        val dayEnd = dayStartMs + 86_400_000L
+        return getSessions(context).filter { it.endTime in dayStartMs until dayEnd && it.endTime > 0 }
+    }
+
+    fun getEntertainMinutesForDay(context: Context, dayStartMs: Long): Int =
+        getSessionsForDay(context, dayStartMs)
+            .filter { isEntertainSession(it) }
+            .sumOf { it.actualMinutes }
+
+    // Get start of a specific day (midnight)
+    fun dayStartMs(year: Int, month: Int, day: Int): Long {
+        val cal = Calendar.getInstance()
+        cal.set(year, month, day, 0, 0, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        return cal.timeInMillis
+    }

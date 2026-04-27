@@ -12,14 +12,30 @@
         android:padding="16dp">
 
         <!-- Header -->
-        <TextView
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="IntentGuard 🛡️"
-            android:textSize="24sp"
-            android:textStyle="bold"
-            android:textColor="@color/text_primary"
-            android:layout_marginBottom="4dp" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="4dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="IntentGuard 🛡️"
+                android:textSize="24sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_primary" />
+
+            <Button
+                android:id="@+id/btnOpenStats"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="📊 Thống kê"
+                android:textSize="12sp"
+                android:backgroundTint="#6200EE" />
+        </LinearLayout>
 
         <TextView
             android:layout_width="match_parent"

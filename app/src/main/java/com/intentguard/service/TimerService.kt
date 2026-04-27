@@ -16,6 +16,7 @@ import android.view.WindowManager
 import android.widget.TextView
 import com.intentguard.R
 import com.intentguard.data.DataStore
+import com.intentguard.data.FirebaseSync
 import com.intentguard.data.Session
 import com.intentguard.ui.MainActivity
 import com.intentguard.ui.SessionEndedActivity
@@ -147,11 +148,26 @@ class TimerService : Service() {
         )
         DataStore.saveSession(this, session)
 
+        // Push lên Firebase (background, không block)
+        scope.launch(Dispatchers.IO) {
+            try {
+                if (FirebaseSync.ensureSignedIn()) FirebaseSync.pushSession(session)
+            } catch (_: Exception) {}
+        }
+
         currentPackage = ""
         currentSessionId = ""
         currentIntention = ""
         removeOverlay()
         AppWatcherService.instance?.resetPopupState()
+
+        // Nếu là browser session có nội dung giải trí → bắt đầu cooldown 1 giờ
+        val isEntertainment = intention.contains("⚠️") ||
+            listOf("truyen", "giải trí", "xem phim", "đọc truyện", "porn", "sex", "manga")
+                .any { intention.lowercase().contains(it) }
+        if (pkg == AppWatcherService.BROWSER_PKG && isEntertainment) {
+            CooldownState.startCooldown(1)
+        }
 
         val intent = Intent(this, SessionEndedActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)

@@ -2,6 +2,7 @@ package com.intentguard.service
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.text.Editable
 import android.text.TextWatcher
@@ -10,32 +11,37 @@ import android.view.LayoutInflater
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.TextView
 import com.intentguard.R
 import com.intentguard.data.DataStore
 
-/**
- * Shows a full-screen blocking overlay using WindowManager.
- * This works even when another app (Samsung Internet) is in foreground,
- * bypassing Android 12+ background activity start restrictions.
- */
 class BlockingOverlayManager(private val context: Context) {
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var overlayView: android.view.View? = null
     private var selectedMinutes = 20
 
+    private val overlayParams get() = WindowManager.LayoutParams(
+        WindowManager.LayoutParams.MATCH_PARENT,
+        WindowManager.LayoutParams.MATCH_PARENT,
+        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+        PixelFormat.TRANSLUCENT
+    ).apply { gravity = Gravity.CENTER }
+
+    // Hiện popup nhập mục đích + thời gian (lần đầu vào browser hoặc bị chặn)
     fun show(appName: String, pkg: String, blockedUrl: String?) {
-        if (overlayView != null) return // already showing
+        if (overlayView != null) return
 
         val inflater = LayoutInflater.from(context)
         val view = inflater.inflate(R.layout.activity_intention_popup, null)
         overlayView = view
 
-        // Setup UI
         view.findViewById<TextView>(R.id.tvAppName).apply {
             text = appName
-            if (blockedUrl != null) setTextColor(android.graphics.Color.parseColor("#E53935"))
+            if (blockedUrl != null) setTextColor(Color.parseColor("#E53935"))
         }
 
         val budget = DataStore.getWeeklyBudgetMinutes(context)
@@ -47,9 +53,7 @@ class BlockingOverlayManager(private val context: Context) {
         val etIntention = view.findViewById<EditText>(R.id.etIntention)
         val etCustomTime = view.findViewById<EditText>(R.id.etCustomTime)
 
-        if (blockedUrl != null) {
-            etIntention.hint = "Tại sao bro cần xem nội dung này?"
-        }
+        if (blockedUrl != null) etIntention.hint = "Tại sao bro cần xem nội dung này?"
 
         val presetMap = mapOf(
             R.id.btn5 to 5, R.id.btn10 to 10,
@@ -85,7 +89,6 @@ class BlockingOverlayManager(private val context: Context) {
             }
         })
 
-        // Start button
         view.findViewById<Button>(R.id.btnStart).setOnClickListener {
             val intention = etIntention.text.toString().trim()
             if (intention.isEmpty()) {
@@ -94,10 +97,14 @@ class BlockingOverlayManager(private val context: Context) {
             }
             val intentionText = if (blockedUrl != null) "⚠️ $intention" else intention
             dismiss()
+            // Nếu là blocked URL: approve URL đó cho session này
+            if (blockedUrl != null) {
+                val domain = extractDomain(blockedUrl)
+                CooldownState.approveUrl(domain)
+            }
             TimerService.startFor(context, pkg, appName, intentionText, selectedMinutes)
         }
 
-        // Cancel → go home
         view.findViewById<Button>(R.id.btnCancel).setOnClickListener {
             dismiss()
             context.startActivity(Intent(Intent.ACTION_MAIN).apply {
@@ -106,23 +113,55 @@ class BlockingOverlayManager(private val context: Context) {
             })
         }
 
-        // Add to window manager as full-screen overlay
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.CENTER
+        try {
+            windowManager.addView(view, overlayParams)
+            DebugLog.add("🛑 Overlay shown: $appName")
+        } catch (e: Exception) {
+            DebugLog.add("❌ Overlay error: ${e.message}")
+            overlayView = null
+        }
+    }
+
+    // Hiện overlay cooldown: block 1 giờ, có nút "Chuyển sang web khác"
+    fun showCooldown(remainingMinutes: Int) {
+        if (overlayView != null) return
+
+        val inflater = LayoutInflater.from(context)
+        val view = inflater.inflate(R.layout.overlay_cooldown, null)
+        overlayView = view
+
+        view.findViewById<TextView>(R.id.tvCooldownTime).text =
+            "Còn lại: ${remainingMinutes} phút"
+
+        // Nút chuyển sang web khác
+        view.findViewById<Button>(R.id.btnSwitchUrl).setOnClickListener {
+            val etUrl = view.findViewById<EditText>(R.id.etWorkUrl)
+            val url = etUrl.text.toString().trim()
+            if (url.isEmpty()) {
+                etUrl.error = "Nhập URL muốn chuyển sang"
+                return@setOnClickListener
+            }
+            // Approve URL này để scanner không block
+            CooldownState.approveUrl(extractDomain(url))
+            dismiss()
+            AppWatcherService.instance?.resetPopupState()
+            DebugLog.add("🔄 Chuyển sang URL: $url")
+        }
+
+        // Nút về màn hình chính
+        view.findViewById<Button>(R.id.btnGoHome).setOnClickListener {
+            dismiss()
+            context.startActivity(Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            })
         }
 
         try {
-            windowManager.addView(view, params)
-            DebugLog.add("🛑 Overlay shown for $appName")
+            windowManager.addView(view, overlayParams)
+            DebugLog.add("🔒 Cooldown overlay shown ($remainingMinutes p)")
         } catch (e: Exception) {
-            DebugLog.add("❌ Overlay error: ${e.message}")
+            DebugLog.add("❌ Cooldown overlay error: ${e.message}")
             overlayView = null
         }
     }
@@ -135,4 +174,12 @@ class BlockingOverlayManager(private val context: Context) {
     }
 
     val isShowing get() = overlayView != null
+
+    private fun extractDomain(url: String): String {
+        return url.lowercase()
+            .removePrefix("https://").removePrefix("http://")
+            .removePrefix("www.")
+            .split("/")[0]
+            .split("?")[0]
+    }
 }

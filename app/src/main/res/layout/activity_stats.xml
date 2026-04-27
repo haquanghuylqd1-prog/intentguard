@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0D1117">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- Header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="16dp">
+
+            <ImageButton
+                android:id="@+id/btnPrevMonth"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@android:drawable/ic_media_previous"
+                android:background="#1A90CAF9"
+                android:tint="#90CAF9" />
+
+            <TextView
+                android:id="@+id/tvMonthYear"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Tháng 4 2026"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:textColor="#90CAF9"
+                android:gravity="center" />
+
+            <ImageButton
+                android:id="@+id/btnNextMonth"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@android:drawable/ic_media_next"
+                android:background="#1A90CAF9"
+                android:tint="#90CAF9" />
+        </LinearLayout>
+
+        <!-- Target input -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="#161B22"
+            android:padding="12dp"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="🎯 Target giải trí tối đa/ngày:"
+                android:textSize="13sp"
+                android:textColor="#90CAF9" />
+
+            <EditText
+                android:id="@+id/etEntertainTarget"
+                android:layout_width="64dp"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#757575"
+                android:textSize="16sp"
+                android:gravity="center"
+                android:background="#0D90CAF9"
+                android:padding="8dp"
+                android:maxLength="3" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text=" phút"
+                android:textSize="13sp"
+                android:textColor="#90CAF9"
+                android:layout_marginEnd="8dp" />
+
+            <Button
+                android:id="@+id/btnSaveTarget"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="Lưu"
+                android:textSize="12sp"
+                android:backgroundTint="#1E88E5" />
+        </LinearLayout>
+
+        <!-- Legend -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="8dp">
+
+            <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1" android:text="✓+ Không giải trí"
+                android:textSize="10sp" android:textColor="#1E88E5" android:gravity="center"/>
+            <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1" android:text="✓ Rất ít"
+                android:textSize="10sp" android:textColor="#1E88E5" android:gravity="center"/>
+            <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1" android:text="✓+ Dưới target"
+                android:textSize="10sp" android:textColor="#43A047" android:gravity="center"/>
+            <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1" android:text="✓ Đạt target"
+                android:textSize="10sp" android:textColor="#43A047" android:gravity="center"/>
+            <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1" android:text="✗ Vượt target"
+                android:textSize="10sp" android:textColor="#E53935" android:gravity="center"/>
+        </LinearLayout>
+
+        <!-- Calendar Grid -->
+        <GridLayout
+            android:id="@+id/calendarGrid"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:columnCount="7"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Week Summary -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Tổng kết theo tuần"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#90CAF9"
+            android:layout_marginBottom="8dp" />
+
+        <LinearLayout
+            android:id="@+id/llWeekSummary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+    </LinearLayout>
+</ScrollView>

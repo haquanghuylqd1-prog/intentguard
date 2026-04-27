@@ -24,50 +24,58 @@ object DebugLog {
     fun clear() = _logs.clear()
 }
 
+// Trạng thái cooldown block sau khi hết session giải trí
+object CooldownState {
+    var blockedUntilMs = 0L
+    var approvedUrl = "" // URL bro được phép dùng trong cooldown
+
+    fun isInCooldown() = System.currentTimeMillis() < blockedUntilMs
+    fun startCooldown(hours: Int = 1) {
+        blockedUntilMs = System.currentTimeMillis() + hours * 3600_000L
+        approvedUrl = ""
+        DebugLog.add("🔒 Cooldown bắt đầu - block $hours giờ")
+    }
+    fun approveUrl(url: String) {
+        approvedUrl = url
+        DebugLog.add("✅ Approved URL trong cooldown: $url")
+    }
+    fun remainingMinutes() = maxOf(0, ((blockedUntilMs - System.currentTimeMillis()) / 60000).toInt())
+}
+
 class AppWatcherService : AccessibilityService() {
 
     private var lastForegroundPkg = ""
     private var popupShownForPkg = ""
     private var lastPopupTime = 0L
     private var lastScannedUrl = ""
-    // Thời điểm overlay bị dismiss mà user chưa điền xong
-    private var overlayDismissedWhileBrowserActive = false
     private val POPUP_COOLDOWN_MS = 2000L
 
     private lateinit var blockingOverlay: BlockingOverlayManager
     private val handler = Handler(Looper.getMainLooper())
 
-    // Periodic scan mỗi 500ms: detect URL + đảm bảo overlay luôn hiện khi cần
     private val urlScanRunnable = object : Runnable {
         override fun run() {
             if (lastForegroundPkg == BROWSER_PKG) {
                 scanBrowserUrl()
-                // Nếu overlay bị dismiss mà browser vẫn foreground → hiện lại ngay
                 ensureBrowserOverlayShowing()
             }
             handler.postDelayed(this, 500)
         }
     }
 
-    // Retry detect browser khi rootInActiveWindow = null
     private var browserDetectRetryCount = 0
     private val browserDetectRunnable = object : Runnable {
         override fun run() {
             if (lastForegroundPkg != BROWSER_PKG) return
             if (TimerService.isRunningFor(BROWSER_PKG)) return
-
             browserDetectRetryCount++
             val root = try { rootInActiveWindow } catch (e: Exception) { null }
-
             if (root != null) {
                 root.recycle()
-                DebugLog.add("🌐 Browser active window OK (retry #$browserDetectRetryCount)")
                 triggerBrowserPopup()
             } else if (browserDetectRetryCount < 10) {
-                DebugLog.add("⚠️ rootInActiveWindow = null (retry #$browserDetectRetryCount)")
                 handler.postDelayed(this, 400)
             } else {
-                DebugLog.add("⚠️ rootInActiveWindow null x10 — force show browser popup")
                 triggerBrowserPopup()
             }
         }
@@ -86,15 +94,16 @@ class AppWatcherService : AccessibilityService() {
         const val BROWSER_PKG = "com.sec.android.app.sbrowser"
     }
 
-    /**
-     * Kiểm tra package có phải keyboard/IME không.
-     * Nếu phải → bỏ qua, không dismiss overlay.
-     */
     private fun isInputMethodPackage(pkg: String): Boolean {
         return try {
             val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
             imm?.enabledInputMethodList?.any { it.packageName == pkg } == true
         } catch (e: Exception) { false }
+    }
+
+    private fun isBlockedUrl(url: String): Boolean {
+        val lower = url.lowercase().trim()
+        return blockedKeywords.any { lower.contains(it) }
     }
 
     override fun onServiceConnected() {
@@ -109,8 +118,6 @@ class AppWatcherService : AccessibilityService() {
         event ?: return
         val pkg = event.packageName?.toString() ?: return
         if (pkg == packageName || pkg == "com.android.systemui") return
-
-        // Bỏ qua event từ keyboard/IME — không để nó dismiss overlay
         if (isInputMethodPackage(pkg)) return
 
         when (event.eventType) {
@@ -143,14 +150,9 @@ class AppWatcherService : AccessibilityService() {
     }
 
     private fun handleForegroundChange(pkg: String) {
-        // Chỉ dismiss overlay khi user THẬT SỰ rời khỏi browser
-        // (không dismiss khi keyboard xuất hiện — đã lọc ở trên)
         if (pkg != BROWSER_PKG && ::blockingOverlay.isInitialized && blockingOverlay.isShowing) {
-            DebugLog.add("📱 Rời browser → dismiss overlay")
             blockingOverlay.dismiss()
-            overlayDismissedWhileBrowserActive = false
         }
-
         if (pkg == lastForegroundPkg) return
         lastForegroundPkg = pkg
         DebugLog.add("📱 Foreground: $pkg")
@@ -167,44 +169,34 @@ class AppWatcherService : AccessibilityService() {
         }
     }
 
-    /**
-     * Đảm bảo overlay luôn hiện khi browser foreground mà chưa có timer.
-     * Được gọi từ periodic scan (mỗi 500ms).
-     */
     private fun ensureBrowserOverlayShowing() {
+        // Nếu timer đang chạy → không cần overlay popup
         if (TimerService.isRunningFor(BROWSER_PKG)) return
         if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
 
-        // Overlay không hiện mà browser đang active → hiện lại
-        val now = System.currentTimeMillis()
-        if (now - lastPopupTime < 1000L) return // tránh spam quá nhanh
+        // Nếu đang cooldown mà URL hiện tại đã approved → không block
+        if (CooldownState.isInCooldown()) {
+            val currentUrl = lastScannedUrl
+            if (currentUrl.isNotEmpty() &&
+                CooldownState.approvedUrl.isNotEmpty() &&
+                currentUrl.contains(CooldownState.approvedUrl, ignoreCase = true)) return
+        }
 
-        DebugLog.add("🔄 ensureBrowserOverlay: overlay không hiện → re-show")
+        val now = System.currentTimeMillis()
+        if (now - lastPopupTime < 1000L) return
         lastPopupTime = now
         popupShownForPkg = BROWSER_PKG
         triggerBrowserPopup()
     }
 
     private fun onBrowserForegrounded() {
-        if (TimerService.isRunningFor(BROWSER_PKG)) {
-            DebugLog.add("🌐 Browser foregrounded — timer đang chạy, skip")
-            return
-        }
-        if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) {
-            DebugLog.add("🌐 Browser foregrounded — overlay đang hiện, skip")
-            return
-        }
-
+        if (TimerService.isRunningFor(BROWSER_PKG)) return
+        if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
         val now = System.currentTimeMillis()
-        if (now - lastPopupTime < POPUP_COOLDOWN_MS) {
-            DebugLog.add("🌐 Browser foregrounded — cooldown, skip")
-            return
-        }
+        if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
 
-        DebugLog.add("🌐 Browser foregrounded — chuẩn bị hiện popup")
         lastPopupTime = now
         popupShownForPkg = BROWSER_PKG
-
         browserDetectRetryCount = 0
         handler.removeCallbacks(browserDetectRunnable)
         handler.postDelayed(browserDetectRunnable, 200)
@@ -214,46 +206,69 @@ class AppWatcherService : AccessibilityService() {
         if (TimerService.isRunningFor(BROWSER_PKG)) return
         if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
         handler.post {
-            DebugLog.add("✅ Showing browser popup")
-            blockingOverlay.show(DataStore.getAppName(this, BROWSER_PKG), BROWSER_PKG, null)
+            if (CooldownState.isInCooldown()) {
+                // Đang trong cooldown → hiện overlay cooldown
+                DebugLog.add("🔒 Cooldown đang active (${CooldownState.remainingMinutes()}p còn lại)")
+                blockingOverlay.showCooldown(CooldownState.remainingMinutes())
+            } else {
+                DebugLog.add("✅ Showing browser popup")
+                blockingOverlay.show(DataStore.getAppName(this, BROWSER_PKG), BROWSER_PKG, null)
+            }
         }
     }
 
     private fun scanBrowserUrl() {
         try {
-            val root = rootInActiveWindow
-            if (root == null) {
-                DebugLog.add("⚠️ rootInActiveWindow = null")
-                return
-            }
+            val root = rootInActiveWindow ?: return
             val url = extractUrlFromTree(root)
             root.recycle()
 
-            if (url.isNullOrEmpty()) {
-                DebugLog.add("🔍 Scan: không tìm thấy URL")
+            if (url.isNullOrEmpty() || url == lastScannedUrl) return
+            lastScannedUrl = url
+            DebugLog.add("🌐 URL: $url")
+
+            val isBlocked = isBlockedUrl(url)
+
+            // Nếu timer đang chạy cho browser session này
+            if (TimerService.isRunningFor(BROWSER_PKG)) {
+                if (isBlocked) {
+                    // URL bị block ngay cả trong session → dừng session, hiện overlay
+                    val now = System.currentTimeMillis()
+                    if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
+                    if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
+                    lastPopupTime = now
+                    DebugLog.add("🚫 BLOCKED trong session! url=$url")
+                    TimerService.stop(this)
+                    popupShownForPkg = ""
+                    handler.post {
+                        blockingOverlay.show("⚠️ Nội dung bị chặn!", BROWSER_PKG, url)
+                    }
+                }
+                // URL hợp lệ trong session → để yên, không làm gì
                 return
             }
-            if (url == lastScannedUrl) return
-            lastScannedUrl = url
-            DebugLog.add("🌐 URL via [location_bar_edit_text]: $url")
 
-            val urlLower = url.lowercase().trim()
-            val blockedBy = blockedKeywords.firstOrNull { urlLower.contains(it) }
-
-            if (blockedBy != null) {
+            // Không có timer đang chạy
+            if (isBlocked) {
                 val now = System.currentTimeMillis()
                 if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
                 if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
-                lastPopupTime = now
-                DebugLog.add("🚫 BLOCKED! keyword='$blockedBy' url=$url")
 
-                TimerService.stop(this)
-                popupShownForPkg = ""
-
-                handler.post {
-                    blockingOverlay.show("⚠️ Nội dung bị chặn!", BROWSER_PKG, url)
+                // Kiểm tra cooldown
+                if (CooldownState.isInCooldown()) {
+                    lastPopupTime = now
+                    DebugLog.add("🔒 COOLDOWN BLOCK! url=$url (${CooldownState.remainingMinutes()}p còn)")
+                    handler.post { blockingOverlay.showCooldown(CooldownState.remainingMinutes()) }
+                } else {
+                    lastPopupTime = now
+                    DebugLog.add("🚫 BLOCKED! url=$url")
+                    popupShownForPkg = ""
+                    handler.post {
+                        blockingOverlay.show("⚠️ Nội dung bị chặn!", BROWSER_PKG, url)
+                    }
                 }
             }
+            // URL ok + không có timer → ensureBrowserOverlayShowing sẽ xử lý
         } catch (e: Exception) {
             DebugLog.add("❌ Scan error: ${e.message}")
         }
@@ -274,8 +289,7 @@ class AppWatcherService : AccessibilityService() {
             try {
                 val nodes = root.findAccessibilityNodeInfosByViewId(resId)
                 if (nodes.isNotEmpty()) {
-                    val text = nodes[0].text?.toString()
-                        ?: nodes[0].contentDescription?.toString()
+                    val text = nodes[0].text?.toString() ?: nodes[0].contentDescription?.toString()
                     nodes.forEach { it.recycle() }
                     if (!text.isNullOrEmpty() && text.length > 3) return text
                 }
@@ -286,9 +300,8 @@ class AppWatcherService : AccessibilityService() {
 
     private fun deepScanForUrl(node: AccessibilityNodeInfo, depth: Int): String? {
         if (depth > 8) return null
-        val text = node.text?.toString() ?: ""
-        val desc = node.contentDescription?.toString() ?: ""
-        val candidate = if (text.isNotEmpty()) text else desc
+        val candidate = node.text?.toString()?.takeIf { it.isNotEmpty() }
+            ?: node.contentDescription?.toString() ?: ""
         if (candidate.length in 4..300) {
             val lc = candidate.lowercase()
             if (lc.startsWith("http") || lc.startsWith("www.") ||

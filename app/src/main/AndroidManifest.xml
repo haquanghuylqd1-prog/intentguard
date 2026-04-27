@@ -40,6 +40,12 @@
             android:launchMode="singleTop"
             android:excludeFromRecents="true" />
 
+        <activity
+            android:name=".ui.StatsActivity"
+            android:exported="false"
+            android:label="Thống kê"
+            android:theme="@style/Theme.IntentGuard" />
+
         <service
             android:name=".service.AppWatcherService"
             android:exported="true"
