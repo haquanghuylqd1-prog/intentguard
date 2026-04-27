@@ -13,7 +13,6 @@ import android.view.accessibility.AccessibilityManager
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.intentguard.R
-import com.intentguard.service.DebugLog
 import com.intentguard.data.DataStore
 import com.intentguard.service.DebugLog
 import java.text.SimpleDateFormat
