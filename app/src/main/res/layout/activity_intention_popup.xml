@@ -28,7 +28,7 @@
                 android:text="Facebook"
                 android:textSize="22sp"
                 android:textStyle="bold"
-                android:textColor="@color/text_primary"
+                android:textColor="#212121"
                 android:gravity="center" />
 
             <TextView
@@ -36,20 +36,21 @@
                 android:layout_height="wrap_content"
                 android:text="Bro muốn làm gì hôm nay? 🤔"
                 android:textSize="14sp"
-                android:textColor="@color/text_secondary"
+                android:textColor="#757575"
                 android:gravity="center"
                 android:layout_marginTop="4dp" />
 
             <!-- Weekly budget info -->
             <LinearLayout
-                android:id="@+id/llBudget"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:layout_marginTop="16dp"
                 android:background="#FFF3E0"
-                android:paddingHorizontal="12dp"
-                android:paddingVertical="8dp">
+                android:paddingLeft="12dp"
+                android:paddingRight="12dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp">
 
                 <TextView
                     android:layout_width="0dp"
@@ -76,7 +77,7 @@
                 android:layout_height="wrap_content"
                 android:text="Mục đích sử dụng:"
                 android:textSize="14sp"
-                android:textColor="@color/text_primary"
+                android:textColor="#212121"
                 android:textStyle="bold"
                 android:layout_marginTop="20dp" />
 
@@ -86,73 +87,121 @@
                 android:layout_height="wrap_content"
                 android:hint="VD: Đọc bài về AI, xem video học Python..."
                 android:textSize="14sp"
+                android:textColor="#212121"
+                android:textColorHint="#9E9E9E"
                 android:minLines="2"
                 android:maxLines="3"
                 android:inputType="textMultiLine|textCapSentences"
-                android:background="@null"
+                android:background="#F5F5F5"
                 android:layout_marginTop="8dp"
-                android:paddingBottom="4dp" />
+                android:padding="10dp" />
 
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="#E0E0E0" />
-
-            <!-- Time picker -->
+            <!-- Time picker - preset buttons -->
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Dự kiến dùng bao lâu?"
                 android:textSize="14sp"
-                android:textColor="@color/text_primary"
+                android:textColor="#212121"
                 android:textStyle="bold"
                 android:layout_marginTop="20dp" />
 
+            <!-- Preset quick buttons -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:gravity="center"
-                android:layout_marginTop="12dp">
+                android:layout_marginTop="10dp">
+
+                <Button
+                    android:id="@+id/btn5"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_weight="1"
+                    android:text="5p"
+                    android:textSize="12sp" />
 
                 <Button
                     android:id="@+id/btn10"
                     style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                     android:layout_width="0dp"
-                    android:layout_height="48dp"
+                    android:layout_height="44dp"
                     android:layout_weight="1"
                     android:text="10p"
-                    android:textSize="13sp" />
+                    android:textSize="12sp"
+                    android:layout_marginStart="6dp" />
 
                 <Button
                     android:id="@+id/btn20"
                     style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                     android:layout_width="0dp"
-                    android:layout_height="48dp"
+                    android:layout_height="44dp"
                     android:layout_weight="1"
                     android:text="20p"
-                    android:textSize="13sp"
-                    android:layout_marginStart="8dp" />
+                    android:textSize="12sp"
+                    android:layout_marginStart="6dp" />
 
                 <Button
                     android:id="@+id/btn30"
                     style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                     android:layout_width="0dp"
-                    android:layout_height="48dp"
+                    android:layout_height="44dp"
                     android:layout_weight="1"
                     android:text="30p"
-                    android:textSize="13sp"
-                    android:layout_marginStart="8dp" />
+                    android:textSize="12sp"
+                    android:layout_marginStart="6dp" />
 
                 <Button
                     android:id="@+id/btn60"
                     style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                     android:layout_width="0dp"
-                    android:layout_height="48dp"
+                    android:layout_height="44dp"
                     android:layout_weight="1"
                     android:text="1h"
+                    android:textSize="12sp"
+                    android:layout_marginStart="6dp" />
+
+            </LinearLayout>
+
+            <!-- Custom time input -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="10dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Hoặc nhập:"
                     android:textSize="13sp"
-                    android:layout_marginStart="8dp" />
+                    android:textColor="#757575" />
+
+                <EditText
+                    android:id="@+id/etCustomTime"
+                    android:layout_width="64dp"
+                    android:layout_height="wrap_content"
+                    android:hint="15"
+                    android:textSize="14sp"
+                    android:textColor="#212121"
+                    android:textColorHint="#BDBDBD"
+                    android:inputType="number"
+                    android:gravity="center"
+                    android:background="#F5F5F5"
+                    android:padding="8dp"
+                    android:layout_marginStart="8dp"
+                    android:maxLength="3" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="phút (1-60)"
+                    android:textSize="13sp"
+                    android:textColor="#757575"
+                    android:layout_marginStart="6dp" />
 
             </LinearLayout>
 
@@ -162,7 +211,8 @@
                 android:layout_height="wrap_content"
                 android:text="Đã chọn: 20 phút"
                 android:textSize="13sp"
-                android:textColor="@color/text_secondary"
+                android:textColor="#6200EE"
+                android:textStyle="bold"
                 android:gravity="center"
                 android:layout_marginTop="8dp" />
 
@@ -173,7 +223,7 @@
                 android:layout_height="52dp"
                 android:text="Bắt đầu ✓"
                 android:textSize="16sp"
-                android:layout_marginTop="20dp"
+                android:layout_marginTop="16dp"
                 android:backgroundTint="#6200EE" />
 
             <Button
@@ -182,7 +232,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Không dùng lúc này"
-                android:textColor="@color/text_secondary"
+                android:textColor="#757575"
                 android:layout_marginTop="4dp" />
 
         </LinearLayout>
