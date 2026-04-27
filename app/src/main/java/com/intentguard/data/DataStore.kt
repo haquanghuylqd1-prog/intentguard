@@ -226,7 +226,6 @@ object DataStore {
             "${minutes}p"
         }
     }
-}
 
     // ── Entertain target ──────────────────────────────────────────────────────
     private const val KEY_ENTERTAIN_TARGET = "entertain_target_minutes"
@@ -269,3 +268,4 @@ object DataStore {
         cal.set(Calendar.MILLISECOND, 0)
         return cal.timeInMillis
     }
+}
