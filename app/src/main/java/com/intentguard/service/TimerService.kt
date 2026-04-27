@@ -18,6 +18,7 @@ import com.intentguard.R
 import com.intentguard.data.DataStore
 import com.intentguard.data.FirebaseSync
 import com.intentguard.data.Session
+import com.intentguard.service.DebugLog
 import com.intentguard.ui.MainActivity
 import com.intentguard.ui.SessionEndedActivity
 import kotlinx.coroutines.*
@@ -56,6 +57,8 @@ class TimerService : Service() {
         currentPackage = pkg
         val sessionId = UUID.randomUUID().toString()
         val startTime = System.currentTimeMillis()
+
+        DebugLog.add("▶️ Timer start: '$intention' ${plannedMinutes}p | domain='${approvedDomain}'")
 
         val session = Session(
             id = sessionId,
@@ -254,10 +257,13 @@ class TimerService : Service() {
         var currentSessionId = ""
         var currentStartTime = 0L
         var currentIntention = ""
+        var approvedDomain = "" // Domain được approve để xem trong session giải trí
 
         fun isRunningFor(pkg: String) = currentPackage == pkg
 
-        fun startFor(context: Context, pkg: String, appName: String, intention: String, minutes: Int) {
+        fun startFor(context: Context, pkg: String, appName: String, intention: String, minutes: Int,
+                     domain: String = "") {
+            approvedDomain = domain
             context.startForegroundService(Intent(context, TimerService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_PACKAGE, pkg)

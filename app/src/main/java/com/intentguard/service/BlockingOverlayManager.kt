@@ -96,13 +96,12 @@ class BlockingOverlayManager(private val context: Context) {
                 return@setOnClickListener
             }
             val intentionText = if (blockedUrl != null) "⚠️ $intention" else intention
+            val domain = if (blockedUrl != null) extractDomain(blockedUrl) else ""
             dismiss()
-            // Nếu là blocked URL: approve URL đó cho session này
-            if (blockedUrl != null) {
-                val domain = extractDomain(blockedUrl)
-                CooldownState.approveUrl(domain)
-            }
-            TimerService.startFor(context, pkg, appName, intentionText, selectedMinutes)
+            // Set lastScannedUrl = blocked URL để scanner không re-trigger ngay
+            AppWatcherService.instance?.resetPopupState(keepUrl = blockedUrl ?: "")
+            TimerService.startFor(context, pkg, appName, intentionText, selectedMinutes, domain)
+            DebugLog.add("▶️ Session started: '$intentionText' ${selectedMinutes}p domain='$domain'")
         }
 
         view.findViewById<Button>(R.id.btnCancel).setOnClickListener {

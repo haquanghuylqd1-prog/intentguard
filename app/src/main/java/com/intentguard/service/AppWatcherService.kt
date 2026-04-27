@@ -232,19 +232,28 @@ class AppWatcherService : AccessibilityService() {
             // Nếu timer đang chạy cho browser session này
             if (TimerService.isRunningFor(BROWSER_PKG)) {
                 if (isBlocked) {
-                    // URL bị block ngay cả trong session → dừng session, hiện overlay
+                    val approvedDomain = TimerService.approvedDomain
+
+                    // Nếu session này đã approve nội dung blocked (bro đã chấp nhận xem)
+                    // → cho qua kể cả khi redirect sang domain khác cùng loại
+                    if (approvedDomain.isNotEmpty()) {
+                        DebugLog.add("✅ Blocked content allowed in session (redirect OK): $url")
+                        return
+                    }
+
+                    // Chưa approve → hỏi lại
                     val now = System.currentTimeMillis()
                     if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
                     if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
                     lastPopupTime = now
-                    DebugLog.add("🚫 BLOCKED trong session! url=$url")
+                    DebugLog.add("🚫 BLOCKED URL trong session! Hỏi lại: $url")
                     TimerService.stop(this)
                     popupShownForPkg = ""
                     handler.post {
                         blockingOverlay.show("⚠️ Nội dung bị chặn!", BROWSER_PKG, url)
                     }
                 }
-                // URL hợp lệ trong session → để yên, không làm gì
+                // URL ok trong session → để yên
                 return
             }
 
@@ -325,10 +334,21 @@ class AppWatcherService : AccessibilityService() {
         })
     }
 
-    fun resetPopupState() {
+    private fun extractDomain(url: String): String {
+        return url.lowercase()
+            .removePrefix("https://").removePrefix("http://")
+            .removePrefix("www.").split("/")[0].split("?")[0]
+    }
+
+    fun resetPopupState(keepUrl: String = "") {
         popupShownForPkg = ""
-        lastScannedUrl = ""
-        lastPopupTime = 0L
+        // Nếu có approved domain, giữ lastScannedUrl để tránh re-scan ngay
+        if (keepUrl.isNotEmpty()) {
+            lastScannedUrl = keepUrl
+        } else {
+            lastScannedUrl = ""
+        }
+        lastPopupTime = System.currentTimeMillis() // cooldown 2s để timer kịp start
     }
 
     override fun onInterrupt() {}
