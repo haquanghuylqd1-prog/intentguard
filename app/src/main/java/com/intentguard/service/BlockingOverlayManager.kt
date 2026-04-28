@@ -135,16 +135,41 @@ class BlockingOverlayManager(private val context: Context) {
         // Nút chuyển sang web khác
         view.findViewById<Button>(R.id.btnSwitchUrl).setOnClickListener {
             val etUrl = view.findViewById<EditText>(R.id.etWorkUrl)
-            val url = etUrl.text.toString().trim()
-            if (url.isEmpty()) {
+            val rawUrl = etUrl.text.toString().trim()
+            if (rawUrl.isEmpty()) {
                 etUrl.error = "Nhập URL muốn chuyển sang"
                 return@setOnClickListener
             }
-            // Approve URL này để scanner không block
-            CooldownState.approveUrl(extractDomain(url))
+
+            // Format URL đúng
+            val fullUrl = if (rawUrl.startsWith("http")) rawUrl else "https://$rawUrl"
+            val domain = extractDomain(rawUrl)
+
+            DebugLog.add("🔄 Chuyển sang URL: $fullUrl (domain=$domain)")
+
+            // Approve domain này trong cooldown để scanner không block
+            CooldownState.approveUrl(domain)
+
+            // Reset scanner state — giữ URL hiện tại để không re-trigger cooldown
+            AppWatcherService.instance?.resetPopupState(keepUrl = domain)
+
             dismiss()
-            AppWatcherService.instance?.resetPopupState()
-            DebugLog.add("🔄 Chuyển sang URL: $url")
+
+            // Mở URL trong Samsung Internet
+            val browserIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(fullUrl)).apply {
+                setPackage("com.sec.android.app.sbrowser")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            try {
+                context.startActivity(browserIntent)
+                DebugLog.add("✅ Opened $fullUrl in Samsung Internet")
+            } catch (e: Exception) {
+                // Fallback: mở bất kỳ browser nào
+                context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(fullUrl)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+                DebugLog.add("✅ Opened $fullUrl in default browser")
+            }
         }
 
         // Nút về màn hình chính

@@ -170,16 +170,17 @@ class AppWatcherService : AccessibilityService() {
     }
 
     private fun ensureBrowserOverlayShowing() {
-        // Nếu timer đang chạy → không cần overlay popup
         if (TimerService.isRunningFor(BROWSER_PKG)) return
         if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
 
-        // Nếu đang cooldown mà URL hiện tại đã approved → không block
+        // Trong cooldown: chỉ block nếu URL hiện tại bị block
+        // URL làm việc bình thường → không hỏi gì cả
         if (CooldownState.isInCooldown()) {
             val currentUrl = lastScannedUrl
-            if (currentUrl.isNotEmpty() &&
-                CooldownState.approvedUrl.isNotEmpty() &&
-                currentUrl.contains(CooldownState.approvedUrl, ignoreCase = true)) return
+            if (currentUrl.isEmpty()) return // chưa biết URL → không làm gì
+            if (!isBlockedUrl(currentUrl)) return // URL ok → cho qua hoàn toàn
+            // URL bị block trong cooldown → đã được xử lý bởi scanBrowserUrl rồi
+            return
         }
 
         val now = System.currentTimeMillis()
@@ -192,9 +193,16 @@ class AppWatcherService : AccessibilityService() {
     private fun onBrowserForegrounded() {
         if (TimerService.isRunningFor(BROWSER_PKG)) return
         if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
+
+        // Trong cooldown: không show popup ngay khi mở browser
+        // scanBrowserUrl sẽ tự detect URL và chỉ block nếu là blocked content
+        if (CooldownState.isInCooldown()) {
+            DebugLog.add("🔒 Cooldown active - let URL scanner handle blocking")
+            return
+        }
+
         val now = System.currentTimeMillis()
         if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
-
         lastPopupTime = now
         popupShownForPkg = BROWSER_PKG
         browserDetectRetryCount = 0
@@ -205,15 +213,11 @@ class AppWatcherService : AccessibilityService() {
     private fun triggerBrowserPopup() {
         if (TimerService.isRunningFor(BROWSER_PKG)) return
         if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
+        // Trong cooldown → không show popup cho URL bình thường
+        if (CooldownState.isInCooldown()) return
         handler.post {
-            if (CooldownState.isInCooldown()) {
-                // Đang trong cooldown → hiện overlay cooldown
-                DebugLog.add("🔒 Cooldown đang active (${CooldownState.remainingMinutes()}p còn lại)")
-                blockingOverlay.showCooldown(CooldownState.remainingMinutes())
-            } else {
-                DebugLog.add("✅ Showing browser popup")
-                blockingOverlay.show(DataStore.getAppName(this, BROWSER_PKG), BROWSER_PKG, null)
-            }
+            DebugLog.add("✅ Showing browser popup")
+            blockingOverlay.show(DataStore.getAppName(this, BROWSER_PKG), BROWSER_PKG, null)
         }
     }
 
