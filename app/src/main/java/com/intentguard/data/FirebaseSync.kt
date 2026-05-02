@@ -5,6 +5,7 @@ import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
+import com.intentguard.service.DebugLog
 import kotlinx.coroutines.tasks.await
 
 object FirebaseSync {
@@ -42,17 +43,28 @@ object FirebaseSync {
     }
 
     suspend fun pullSessions(context: Context): Int {
-        // Đảm bảo đã sign in
         if (uid() == null) return 0
         return try {
-            val allUserDocs = db.collection("intentguard_sessions").get().await()
+            // Tất cả UID từ các lần cài app trước
+            val knownUids = listOf(
+                "1NclyrABN8hxeGCgfRZiDRM2iox1",
+                "8E3SJilF4UVZ73YnwxXBlFEeQr92",
+                "UjbDPV6q2IUoPRTlxXU1Mufs1303",
+                "awHGUsbBUph6Ma132Kw7bgike122",
+                "zTbvSSENe4fpZai8TC2v1IZf9Eq1"
+            )
+
+            DebugLog.add("📦 Pulling from ${knownUids.size} known UIDs...")
             val allRemote = mutableListOf<Session>()
 
-            for (userDoc in allUserDocs.documents) {
+            for (uid in knownUids) {
                 try {
-                    val snap = userDoc.reference.collection("sessions")
+                    val snap = db.collection("intentguard_sessions")
+                        .document(uid)
+                        .collection("sessions")
                         .orderBy("startTime", com.google.firebase.firestore.Query.Direction.DESCENDING)
                         .limit(500).get().await()
+                    DebugLog.add("📖 UID ${uid.take(8)}: ${snap.size()} sessions")
                     snap.documents.mapNotNullTo(allRemote) { doc ->
                         try {
                             Session(
@@ -68,7 +80,7 @@ object FirebaseSync {
                         } catch (_: Exception) { null }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error reading user doc ${userDoc.id}: ${e.message}")
+                    DebugLog.add("❌ UID ${uid.take(8)}: ${e.message?.take(50)}")
                 }
             }
 
@@ -81,10 +93,10 @@ object FirebaseSync {
                     count++
                 }
             }
-            Log.d(TAG, "Pulled $count sessions from ${allUserDocs.size()} users")
+            DebugLog.add("✅ Merged $count new sessions (total: ${allRemote.size})")
             count
         } catch (e: Exception) {
-            Log.e(TAG, "Pull failed: ${e.message}")
+            DebugLog.add("❌ pullSessions error: ${e.message?.take(80)}")
             0
         }
     }
