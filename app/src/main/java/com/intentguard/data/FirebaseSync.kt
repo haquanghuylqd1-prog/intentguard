@@ -2,30 +2,27 @@ package com.intentguard.data
 
 import android.content.Context
 import android.util.Log
-import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import com.intentguard.service.DebugLog
 import kotlinx.coroutines.tasks.await
 
+
 object FirebaseSync {
     private const val TAG = "IGSync"
     private val db get() = FirebaseFirestore.getInstance()
-    private val auth get() = FirebaseAuth.getInstance()
 
-    suspend fun ensureSignedIn(): Boolean {
-        return try {
-            if (auth.currentUser == null) auth.signInAnonymously().await()
-            true
-        } catch (e: Exception) { Log.e(TAG, "SignIn failed: ${e.message}"); false }
-    }
+    // Dùng fixed user ID giống Speaking Coach — không cần Auth, không bao giờ mất data
+    private const val FIXED_USER_ID = "quanghuy_intentguard"
 
-    fun uid(): String? = auth.currentUser?.uid
+    // Giả ensureSignedIn luôn true — không cần anonymous auth nữa
+    suspend fun ensureSignedIn(): Boolean = true
+
+    fun uid(): String = FIXED_USER_ID
 
     suspend fun pushSession(session: Session): Boolean {
-        val uid = uid() ?: return false
         return try {
-            db.collection("intentguard_sessions").document(uid)
+            db.collection("intentguard_sessions").document(FIXED_USER_ID)
                 .collection("sessions").document(session.id)
                 .set(mapOf(
                     "id" to session.id,
@@ -43,10 +40,10 @@ object FirebaseSync {
     }
 
     suspend fun pullSessions(context: Context): Int {
-        if (uid() == null) return 0
         return try {
-            // Tất cả UID từ các lần cài app trước
-            val knownUids = listOf(
+            // Pull từ fixed ID + tất cả UID cũ từ anonymous auth
+            val allUids = listOf(
+                FIXED_USER_ID,
                 "1NclyrABN8hxeGCgfRZiDRM2iox1",
                 "8E3SJilF4UVZ73YnwxXBlFEeQr92",
                 "UjbDPV6q2IUoPRTlxXU1Mufs1303",
@@ -54,17 +51,16 @@ object FirebaseSync {
                 "zTbvSSENe4fpZai8TC2v1IZf9Eq1"
             )
 
-            DebugLog.add("📦 Pulling from ${knownUids.size} known UIDs...")
+            DebugLog.add("📦 Pulling from ${allUids.size} UIDs...")
             val allRemote = mutableListOf<Session>()
 
-            for (uid in knownUids) {
+            for (uid in allUids) {
                 try {
                     val snap = db.collection("intentguard_sessions")
-                        .document(uid)
-                        .collection("sessions")
+                        .document(uid).collection("sessions")
                         .orderBy("startTime", com.google.firebase.firestore.Query.Direction.DESCENDING)
                         .limit(500).get().await()
-                    DebugLog.add("📖 UID ${uid.take(8)}: ${snap.size()} sessions")
+                    DebugLog.add("📖 ${uid.take(12)}: ${snap.size()} sessions")
                     snap.documents.mapNotNullTo(allRemote) { doc ->
                         try {
                             Session(
@@ -80,7 +76,7 @@ object FirebaseSync {
                         } catch (_: Exception) { null }
                     }
                 } catch (e: Exception) {
-                    DebugLog.add("❌ UID ${uid.take(8)}: ${e.message?.take(50)}")
+                    DebugLog.add("❌ ${uid.take(12)}: ${e.message?.take(40)}")
                 }
             }
 
@@ -102,9 +98,8 @@ object FirebaseSync {
     }
 
     suspend fun pushSettings(context: Context): Boolean {
-        val uid = uid() ?: return false
         return try {
-            db.collection("intentguard_settings").document(uid)
+            db.collection("intentguard_settings").document(FIXED_USER_ID)
                 .set(mapOf(
                     "weeklyBudgetMinutes" to DataStore.getWeeklyBudgetMinutes(context),
                     "weeklyReductionMinutes" to DataStore.getWeeklyReductionMinutes(context),
@@ -116,9 +111,8 @@ object FirebaseSync {
     }
 
     suspend fun pullSettings(context: Context): Boolean {
-        val uid = uid() ?: return false
         return try {
-            val doc = db.collection("intentguard_settings").document(uid).get().await()
+            val doc = db.collection("intentguard_settings").document(FIXED_USER_ID).get().await()
             if (doc.exists()) {
                 doc.getLong("weeklyBudgetMinutes")?.toInt()?.let { DataStore.setWeeklyBudgetMinutes(context, it) }
                 doc.getLong("weeklyReductionMinutes")?.toInt()?.let { DataStore.setWeeklyReductionMinutes(context, it) }
