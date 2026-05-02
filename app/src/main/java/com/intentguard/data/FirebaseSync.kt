@@ -44,31 +44,42 @@ object FirebaseSync {
     suspend fun pullSessions(context: Context): Int {
         val uid = uid() ?: return 0
         return try {
-            val snap = db.collection("intentguard_sessions").document(uid)
-                .collection("sessions")
-                .orderBy("startTime", com.google.firebase.firestore.Query.Direction.DESCENDING)
-                .limit(1000).get().await()
-            val remote = snap.documents.mapNotNull { doc ->
+            // Pull từ tất cả user documents (vì mỗi lần reinstall = anonymous user mới)
+            val allUserDocs = db.collection("intentguard_sessions").get().await()
+            val allRemote = mutableListOf<Session>()
+
+            for (userDoc in allUserDocs.documents) {
                 try {
-                    Session(
-                        id = doc.getString("id") ?: return@mapNotNull null,
-                        appPackage = doc.getString("appPackage") ?: "",
-                        appName = doc.getString("appName") ?: "",
-                        intention = doc.getString("intention") ?: "",
-                        plannedMinutes = (doc.getLong("plannedMinutes") ?: 0).toInt(),
-                        startTime = doc.getLong("startTime") ?: 0L,
-                        endTime = doc.getLong("endTime") ?: 0L,
-                        actualMinutes = (doc.getLong("actualMinutes") ?: 0).toInt()
-                    )
-                } catch (_: Exception) { null }
+                    val snap = userDoc.reference.collection("sessions")
+                        .orderBy("startTime", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                        .limit(500).get().await()
+                    snap.documents.mapNotNullTo(allRemote) { doc ->
+                        try {
+                            Session(
+                                id = doc.getString("id") ?: return@mapNotNullTo null,
+                                appPackage = doc.getString("appPackage") ?: "",
+                                appName = doc.getString("appName") ?: "",
+                                intention = doc.getString("intention") ?: "",
+                                plannedMinutes = (doc.getLong("plannedMinutes") ?: 0).toInt(),
+                                startTime = doc.getLong("startTime") ?: 0L,
+                                endTime = doc.getLong("endTime") ?: 0L,
+                                actualMinutes = (doc.getLong("actualMinutes") ?: 0).toInt()
+                            )
+                        } catch (_: Exception) { null }
+                    }
+                } catch (_: Exception) {}
             }
+
             val localMap = DataStore.getSessions(context).associateBy { it.id }
             var count = 0
-            remote.forEach { r ->
+            allRemote.forEach { r ->
                 val l = localMap[r.id]
-                if (l == null || r.endTime > l.endTime) { DataStore.saveSession(context, r); count++ }
+                if (l == null || r.endTime > l.endTime) {
+                    DataStore.saveSession(context, r)
+                    count++
+                }
             }
-            Log.d(TAG, "Pulled $count new sessions")
+            Log.d(TAG, "Pulled $count sessions from ${allUserDocs.size()} users")
             count
         } catch (e: Exception) { Log.e(TAG, "Pull failed: ${e.message}"); 0 }
     }

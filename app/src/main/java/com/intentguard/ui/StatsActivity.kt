@@ -118,6 +118,12 @@ class StatsActivity : AppCompatActivity() {
             grid.addView(empty)
         }
 
+        // Ngày bắt đầu track: 27/4/2026
+        val trackingStartCal = Calendar.getInstance()
+        trackingStartCal.set(2026, Calendar.APRIL, 27, 0, 0, 0)
+        trackingStartCal.set(Calendar.MILLISECOND, 0)
+        val trackingStartMs = trackingStartCal.timeInMillis
+
         // Day cells
         for (day in 1..daysInMonth) {
             val dayStart = DataStore.dayStartMs(displayYear, displayMonth, day)
@@ -125,9 +131,11 @@ class StatsActivity : AppCompatActivity() {
             val isFuture = if (isCurrentMonth) day > todayDay else
                 (displayYear > today.get(Calendar.YEAR) ||
                  (displayYear == today.get(Calendar.YEAR) && displayMonth > today.get(Calendar.MONTH)))
+            // Ngày trước tracking start → hiện số ngày nhưng không hiện tick
+            val isBeforeTracking = dayStart < trackingStartMs
             val isToday = isCurrentMonth && day == todayDay
 
-            val cell = makeDayCell(day, entertainMins, isFuture, isToday)
+            val cell = makeDayCell(day, entertainMins, isFuture || isBeforeTracking, isToday)
             grid.addView(cell)
         }
     }
@@ -334,18 +342,38 @@ class StatsActivity : AppCompatActivity() {
     }
 
     private fun syncFromFirebase() {
+        val tvSync = TextView(this).apply {
+            text = "⏳ Đang sync data từ Firebase..."
+            textSize = 12f
+            setTextColor(Color.parseColor("#90CAF9"))
+            gravity = Gravity.CENTER
+            setPadding(0, 8, 0, 0)
+        }
+        findViewById<LinearLayout>(R.id.llWeekSummary).addView(tvSync)
+
         lifecycleScope.launch {
             try {
-                if (FirebaseSync.ensureSignedIn()) {
-                    val pulled = FirebaseSync.pullSessions(this@StatsActivity)
+                val signedIn = FirebaseSync.ensureSignedIn()
+                if (signedIn) {
+                    val uid = FirebaseSync.uid() ?: "null"
+                    android.util.Log.d("IntentGuard", "Firebase UID: $uid")
+
                     FirebaseSync.pullSettings(this@StatsActivity)
-                    if (pulled > 0) {
-                        entertainTargetMinutes = DataStore.getEntertainTargetMinutes(this@StatsActivity)
-                        renderCalendar()
-                        renderWeekSummary()
-                    }
+                    entertainTargetMinutes = DataStore.getEntertainTargetMinutes(this@StatsActivity)
+
+                    val pulled = FirebaseSync.pullSessions(this@StatsActivity)
+                    android.util.Log.d("IntentGuard", "Pulled sessions: $pulled")
+
+                    tvSync.text = "✅ Đã sync $pulled sessions từ Firebase"
+                    renderCalendar()
+                    renderWeekSummary()
+                } else {
+                    tvSync.text = "❌ Firebase sign-in failed"
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                tvSync.text = "❌ Sync error: ${e.message}"
+                android.util.Log.e("IntentGuard", "Sync error: ${e.message}")
+            }
         }
     }
 
