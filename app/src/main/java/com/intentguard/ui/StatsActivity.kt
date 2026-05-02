@@ -10,6 +10,7 @@ import androidx.lifecycle.lifecycleScope
 import com.intentguard.R
 import com.intentguard.data.DataStore
 import com.intentguard.data.FirebaseSync
+import com.intentguard.service.DebugLog
 import kotlinx.coroutines.launch
 import java.util.*
 
@@ -342,37 +343,29 @@ class StatsActivity : AppCompatActivity() {
     }
 
     private fun syncFromFirebase() {
-        val tvSync = TextView(this).apply {
-            text = "⏳ Đang sync data từ Firebase..."
-            textSize = 12f
-            setTextColor(Color.parseColor("#90CAF9"))
-            gravity = Gravity.CENTER
-            setPadding(0, 8, 0, 0)
-        }
-        findViewById<LinearLayout>(R.id.llWeekSummary).addView(tvSync)
-
         lifecycleScope.launch {
             try {
+                DebugLog.add("🔄 Firebase sync bắt đầu...")
                 val signedIn = FirebaseSync.ensureSignedIn()
-                if (signedIn) {
-                    val uid = FirebaseSync.uid() ?: "null"
-                    android.util.Log.d("IntentGuard", "Firebase UID: $uid")
-
-                    FirebaseSync.pullSettings(this@StatsActivity)
-                    entertainTargetMinutes = DataStore.getEntertainTargetMinutes(this@StatsActivity)
-
-                    val pulled = FirebaseSync.pullSessions(this@StatsActivity)
-                    android.util.Log.d("IntentGuard", "Pulled sessions: $pulled")
-
-                    tvSync.text = "✅ Đã sync $pulled sessions từ Firebase"
-                    renderCalendar()
-                    renderWeekSummary()
-                } else {
-                    tvSync.text = "❌ Firebase sign-in failed"
+                if (!signedIn) {
+                    DebugLog.add("❌ Firebase sign-in FAILED")
+                    return@launch
                 }
+                val uid = FirebaseSync.uid() ?: "null"
+                DebugLog.add("✅ Firebase UID: $uid")
+
+                FirebaseSync.pullSettings(this@StatsActivity)
+                entertainTargetMinutes = DataStore.getEntertainTargetMinutes(this@StatsActivity)
+
+                val pulled = FirebaseSync.pullSessions(this@StatsActivity)
+                DebugLog.add("✅ Firebase pulled: $pulled sessions")
+
+                // Luôn re-render sau sync
+                renderCalendar()
+                renderWeekSummary()
+
             } catch (e: Exception) {
-                tvSync.text = "❌ Sync error: ${e.message}"
-                android.util.Log.e("IntentGuard", "Sync error: ${e.message}")
+                DebugLog.add("❌ Firebase sync error: ${e.message}")
             }
         }
     }

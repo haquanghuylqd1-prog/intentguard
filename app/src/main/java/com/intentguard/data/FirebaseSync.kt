@@ -42,9 +42,9 @@ object FirebaseSync {
     }
 
     suspend fun pullSessions(context: Context): Int {
-        val uid = uid() ?: return 0
+        // Đảm bảo đã sign in
+        if (uid() == null) return 0
         return try {
-            // Pull từ tất cả user documents (vì mỗi lần reinstall = anonymous user mới)
             val allUserDocs = db.collection("intentguard_sessions").get().await()
             val allRemote = mutableListOf<Session>()
 
@@ -67,7 +67,9 @@ object FirebaseSync {
                             )
                         } catch (_: Exception) { null }
                     }
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error reading user doc ${userDoc.id}: ${e.message}")
+                }
             }
 
             val localMap = DataStore.getSessions(context).associateBy { it.id }
@@ -81,7 +83,10 @@ object FirebaseSync {
             }
             Log.d(TAG, "Pulled $count sessions from ${allUserDocs.size()} users")
             count
-        } catch (e: Exception) { Log.e(TAG, "Pull failed: ${e.message}"); 0 }
+        } catch (e: Exception) {
+            Log.e(TAG, "Pull failed: ${e.message}")
+            0
+        }
     }
 
     suspend fun pushSettings(context: Context): Boolean {
