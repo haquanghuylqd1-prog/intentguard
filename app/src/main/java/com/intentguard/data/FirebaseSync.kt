@@ -2,21 +2,30 @@ package com.intentguard.data
 
 import android.content.Context
 import android.util.Log
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import com.intentguard.service.DebugLog
 import kotlinx.coroutines.tasks.await
 
-
 object FirebaseSync {
     private const val TAG = "IGSync"
     private val db get() = FirebaseFirestore.getInstance()
+    private val auth get() = FirebaseAuth.getInstance()
 
-    // Dùng fixed user ID giống Speaking Coach — không cần Auth, không bao giờ mất data
+    // Fixed user ID — không bao giờ thay đổi dù cài lại app
     private const val FIXED_USER_ID = "quanghuy_intentguard"
 
-    // Giả ensureSignedIn luôn true — không cần anonymous auth nữa
-    suspend fun ensureSignedIn(): Boolean = true
+    // Sign in anonymous để đọc được 5 UID cũ (cần request.auth != null)
+    suspend fun ensureSignedIn(): Boolean {
+        return try {
+            if (auth.currentUser == null) auth.signInAnonymously().await()
+            true
+        } catch (e: Exception) {
+            DebugLog.add("⚠️ Anonymous sign-in failed: ${e.message?.take(40)}")
+            true // vẫn tiếp tục vì fixed UID không cần auth
+        }
+    }
 
     fun uid(): String = FIXED_USER_ID
 
