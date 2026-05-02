@@ -162,24 +162,21 @@ class TimerService : Service() {
         currentSessionId = ""
         currentIntention = ""
         removeOverlay()
-        AppWatcherService.instance?.resetPopupState()
 
-        // Nếu là browser session có nội dung giải trí → bắt đầu cooldown 1 giờ
-        val isEntertainment = intention.contains("⚠️") ||
-            listOf("truyen", "giải trí", "xem phim", "đọc truyện", "porn", "sex", "manga")
-                .any { intention.lowercase().contains(it) }
-        if (pkg == AppWatcherService.BROWSER_PKG && isEntertainment) {
+        // Nếu là browser session giải trí → cooldown 1 giờ
+        val isEntertain = DataStore.isEntertainSession(session)
+        if (pkg == AppWatcherService.BROWSER_PKG && isEntertain) {
             CooldownState.startCooldown(1)
         }
 
-        val intent = Intent(this, SessionEndedActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            putExtra(SessionEndedActivity.EXTRA_APP_NAME, appName)
-            putExtra(SessionEndedActivity.EXTRA_PLANNED, plannedMinutes)
-            putExtra(SessionEndedActivity.EXTRA_ACTUAL, actualMinutes)
-            putExtra(SessionEndedActivity.EXTRA_INTENTION, intention)
+        AppWatcherService.instance?.resetPopupState()
+
+        // Hiện overlay "hết giờ" đè lên app hiện tại
+        val overlay = AppWatcherService.instance?.let {
+            BlockingOverlayManager(this)
         }
-        startActivity(intent)
+        overlay?.showSessionEnded(appName, plannedMinutes, actualMinutes, intention, isEntertain)
+
         stopSelf()
     }
 
