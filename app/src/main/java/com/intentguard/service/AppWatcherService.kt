@@ -194,10 +194,14 @@ class AppWatcherService : AccessibilityService() {
         if (TimerService.isRunningFor(BROWSER_PKG)) return
         if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
 
-        // Trong cooldown: không show popup ngay khi mở browser
-        // scanBrowserUrl sẽ tự detect URL và chỉ block nếu là blocked content
         if (CooldownState.isInCooldown()) {
-            DebugLog.add("🔒 Cooldown active - let URL scanner handle blocking")
+            // Reset cả URL cache lẫn popup timer để scanner detect ngay
+            lastScannedUrl = ""
+            lastPopupTime = 0L
+            DebugLog.add("🔒 Cooldown active - reset state, scanner will block if needed")
+            // Scan ngay lập tức thay vì chờ 500ms
+            handler.postDelayed({ scanBrowserUrl() }, 300)
+            handler.postDelayed({ scanBrowserUrl() }, 800)
             return
         }
 

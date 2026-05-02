@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.os.Handler
+import android.os.Looper
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
@@ -32,8 +34,8 @@ class BlockingOverlayManager(private val context: Context) {
         PixelFormat.TRANSLUCENT
     ).apply { gravity = Gravity.CENTER }
 
-    // Params cho session ended overlay — KHÔNG cho touch ra ngoài
-    private val blockingParams get() = WindowManager.LayoutParams(
+    // Params cho session ended overlay — KHÔNG cho touch ra ngoài, KHÔNG cần focus
+    private val sessionEndedParams get() = WindowManager.LayoutParams(
         WindowManager.LayoutParams.MATCH_PARENT,
         WindowManager.LayoutParams.MATCH_PARENT,
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -41,6 +43,19 @@ class BlockingOverlayManager(private val context: Context) {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
         PixelFormat.OPAQUE
     ).apply { gravity = Gravity.CENTER }
+
+    // Params cho cooldown overlay — CẦN focus để nhập URL (bàn phím hoạt động)
+    private val cooldownParams get() = WindowManager.LayoutParams(
+        WindowManager.LayoutParams.MATCH_PARENT,
+        WindowManager.LayoutParams.MATCH_PARENT,
+        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+        PixelFormat.TRANSLUCENT
+    ).apply {
+        gravity = Gravity.CENTER
+        softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN or
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
+    }
 
     // Hiện popup nhập mục đích + thời gian (lần đầu vào browser hoặc bị chặn)
     fun show(appName: String, pkg: String, blockedUrl: String?) {
@@ -214,9 +229,20 @@ class BlockingOverlayManager(private val context: Context) {
             })
         }
 
+        val etUrl = view.findViewById<EditText>(R.id.etWorkUrl)
+
         try {
-            windowManager.addView(view, blockingParams)
+            windowManager.addView(view, cooldownParams)
             DebugLog.add("🔒 Cooldown overlay shown ($remainingMinutes p)")
+            // Request focus để bàn phím hoạt động khi tap vào EditText
+            Handler(Looper.getMainLooper()).postDelayed({
+                etUrl.setOnClickListener {
+                    etUrl.requestFocus()
+                    val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)
+                        as android.view.inputmethod.InputMethodManager
+                    imm.showSoftInput(etUrl, android.view.inputmethod.InputMethodManager.SHOW_FORCED)
+                }
+            }, 200)
         } catch (e: Exception) {
             DebugLog.add("❌ Cooldown overlay error: ${e.message}")
             overlayView = null
@@ -329,7 +355,7 @@ class BlockingOverlayManager(private val context: Context) {
         })
 
         try {
-            windowManager.addView(root, blockingParams)
+            windowManager.addView(root, sessionEndedParams)
             DebugLog.add("⏰ Session ended overlay shown")
         } catch (e: Exception) {
             DebugLog.add("❌ SessionEnded overlay error: ${e.message}")
