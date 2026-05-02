@@ -20,7 +20,6 @@ import com.intentguard.data.FirebaseSync
 import com.intentguard.data.Session
 import com.intentguard.service.DebugLog
 import com.intentguard.ui.MainActivity
-import com.intentguard.ui.SessionEndedActivity
 import kotlinx.coroutines.*
 import java.util.UUID
 
