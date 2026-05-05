@@ -229,6 +229,16 @@ class BlockingOverlayManager(private val context: Context) {
             })
         }
 
+        // Nút dùng app hiện tại để làm việc (cho FB/YT)
+        view.findViewById<Button>(R.id.btnUseForWork).setOnClickListener {
+            // Reset cooldown state để scanner không block
+            AppWatcherService.instance?.resetPopupState()
+            dismiss()
+            // Show popup nhập mục đích làm việc bình thường
+            // AppWatcherService sẽ tự detect và show popup vì popupShownForPkg đã reset
+            DebugLog.add("💼 User chọn dùng app để làm việc trong cooldown")
+        }
+
         val etUrl = view.findViewById<EditText>(R.id.etWorkUrl)
 
         try {

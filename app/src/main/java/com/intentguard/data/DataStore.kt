@@ -240,14 +240,19 @@ object DataStore {
     // ── Session classification ────────────────────────────────────────────────
     private val entertainKeywords = listOf(
         "truyen", "truyện", "manga", "manhwa", "comic",
-        "giải trí", "xem phim", "đọc truyện",
-        "porn", "sex", "hentai", "⚠️"
+        "giải trí", "xem phim", "đọc truyện", "giải tri",
+        "porn", "sex", "hentai", "⚠️", "reels", "shorts",
+        "tiktok", "scroll", "lướt"
     )
 
     fun isEntertainSession(session: Session): Boolean {
-        val lower = session.intention.lowercase()
-        return entertainKeywords.any { lower.contains(it) } ||
-               session.appPackage in listOf("com.facebook.katana","com.facebook.lite","com.google.android.youtube")
+        val intention = session.intention
+        // Prefix emoji — chính xác nhất, ưu tiên tuyệt đối
+        if (intention.startsWith("🎮") || intention.startsWith("⚠️")) return true
+        if (intention.startsWith("💼")) return false
+        // Session cũ không có prefix: check keywords
+        val lower = intention.lowercase()
+        return entertainKeywords.any { lower.contains(it) }
     }
 
     // ── Day stats ─────────────────────────────────────────────────────────────

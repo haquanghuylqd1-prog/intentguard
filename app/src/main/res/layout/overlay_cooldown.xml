@@ -91,6 +91,15 @@
                 android:backgroundTint="#43A047" />
 
             <Button
+                android:id="@+id/btnUseForWork"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:text="💼 Dùng app này để làm việc"
+                android:textSize="15sp"
+                android:layout_marginTop="8dp"
+                android:backgroundTint="#1E88E5" />
+
+            <Button
                 android:id="@+id/btnGoHome"
                 style="@style/Widget.MaterialComponents.Button.TextButton"
                 android:layout_width="match_parent"

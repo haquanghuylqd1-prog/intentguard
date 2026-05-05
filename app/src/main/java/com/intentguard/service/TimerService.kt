@@ -162,10 +162,10 @@ class TimerService : Service() {
         currentIntention = ""
         removeOverlay()
 
-        // Nếu là browser session giải trí → cooldown 1 giờ
+        // Nếu là session giải trí → bắt đầu cooldown 1 giờ cho đúng pkg đó
         val isEntertain = DataStore.isEntertainSession(session)
-        if (pkg == AppWatcherService.BROWSER_PKG && isEntertain) {
-            CooldownState.startCooldown(1)
+        if (isEntertain) {
+            CooldownState.startCooldown(1, pkg)
         }
 
         AppWatcherService.instance?.resetPopupState()

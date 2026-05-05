@@ -351,8 +351,7 @@ class StatsActivity : AppCompatActivity() {
                     DebugLog.add("❌ Firebase sign-in FAILED")
                     return@launch
                 }
-                val uid = FirebaseSync.uid() ?: "null"
-                DebugLog.add("✅ Firebase UID: $uid")
+                DebugLog.add("✅ Firebase UID: ${FirebaseSync.uid()}")
 
                 FirebaseSync.pullSettings(this@StatsActivity)
                 entertainTargetMinutes = DataStore.getEntertainTargetMinutes(this@StatsActivity)
@@ -360,7 +359,24 @@ class StatsActivity : AppCompatActivity() {
                 val pulled = FirebaseSync.pullSessions(this@StatsActivity)
                 DebugLog.add("✅ Firebase pulled: $pulled sessions")
 
-                // Luôn re-render sau sync
+                // Debug: log today's sessions SAU KHI pull để thấy đầy đủ
+                val today = Calendar.getInstance()
+                val todayStart = DataStore.dayStartMs(
+                    today.get(Calendar.YEAR),
+                    today.get(Calendar.MONTH),
+                    today.get(Calendar.DAY_OF_MONTH)
+                )
+                val todaySessions = DataStore.getSessionsForDay(this@StatsActivity, todayStart)
+                var totalEntertain = 0
+                var totalWork = 0
+                DebugLog.add("📊 Hôm nay có ${todaySessions.size} sessions:")
+                todaySessions.forEach { s ->
+                    val isE = DataStore.isEntertainSession(s)
+                    if (isE) totalEntertain += s.actualMinutes else totalWork += s.actualMinutes
+                    DebugLog.add("  ${if (isE) "🎮" else "💼"} ${s.appName} | '${s.intention.take(15)}' | ${s.actualMinutes}p")
+                }
+                DebugLog.add("📊 Tổng: Giải trí=${totalEntertain}p | Làm việc=${totalWork}p")
+
                 renderCalendar()
                 renderWeekSummary()
 
