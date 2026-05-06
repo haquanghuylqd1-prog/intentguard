@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.inputmethod.InputMethodManager
 import com.intentguard.data.DataStore
 import com.intentguard.ui.IntentionPopupActivity
 import java.text.SimpleDateFormat
@@ -26,7 +27,7 @@ object DebugLog {
 object CooldownState {
     var blockedUntilMs = 0L
     var approvedUrl = ""
-    var cooldownPkg = ""
+    var cooldownPkg = "" // pkg nào trigger cooldown
 
     fun isInCooldown() = System.currentTimeMillis() < blockedUntilMs
 
@@ -34,12 +35,12 @@ object CooldownState {
         blockedUntilMs = System.currentTimeMillis() + hours * 3600_000L
         approvedUrl = ""
         cooldownPkg = pkg
-        DebugLog.add("🔒 Cooldown bắt đầu - block ${hours}h (pkg=$pkg)")
+        DebugLog.add("🔒 Cooldown bắt đầu - block ${hours}h")
     }
 
     fun approveUrl(url: String) {
         approvedUrl = url
-        DebugLog.add("✅ Approved URL trong cooldown: $url")
+        DebugLog.add("✅ Approved URL: $url")
     }
 
     fun remainingMinutes() = maxOf(0, ((blockedUntilMs - System.currentTimeMillis()) / 60000).toInt())
@@ -52,15 +53,12 @@ class AppWatcherService : AccessibilityService() {
     private var lastPopupTime = 0L
     private var lastScannedUrl = ""
     private val POPUP_COOLDOWN_MS = 2000L
-
-    // Track entertainment content detection
     private var lastEntertainDetectTime = 0L
-    private val ENTERTAIN_DETECT_COOLDOWN_MS = 5000L // 5 giây giữa các lần detect
+    private val ENTERTAIN_DETECT_COOLDOWN_MS = 5000L
 
     private lateinit var blockingOverlay: BlockingOverlayManager
     private val handler = Handler(Looper.getMainLooper())
 
-    // Scan browser URL mỗi 500ms
     private val urlScanRunnable = object : Runnable {
         override fun run() {
             if (lastForegroundPkg == BROWSER_PKG) {
@@ -71,12 +69,10 @@ class AppWatcherService : AccessibilityService() {
         }
     }
 
-    // Scan FB/YT content mỗi 2 giây
     private val appContentScanRunnable = object : Runnable {
         override fun run() {
             val pkg = lastForegroundPkg
             if (pkg in SOCIAL_PKGS && !TimerService.isRunningFor(pkg)) {
-                // Chỉ scan nếu không đang trong session làm việc
                 scanAppForEntertainContent(pkg)
             }
             handler.postDelayed(this, 2000)
@@ -109,24 +105,6 @@ class AppWatcherService : AccessibilityService() {
         "18adult", "phimse", "phim18", "javmost", "jav"
     )
 
-    // Keywords detect Reels/Shorts trong FB/YT
-    // Dùng lowercase, match partial
-    private val reelsKeywords = listOf(
-        "reels", "reel",
-        "shorts", "short",
-        "video ngắn", "video ngan"
-    )
-
-    // Text thường xuất hiện khi đang xem Reels/Shorts (UI elements)
-    private val reelsUIPatterns = listOf(
-        "thích", "bình luận", "chia sẻ", "theo dõi",   // FB Reels
-        "like", "comment", "share", "follow",             // FB Reels EN
-        "đăng ký", "đã đăng ký",                         // YT Shorts
-        "subscribe", "subscribed",                         // YT Shorts EN
-        "cuộn lên để xem video tiếp theo",
-        "scroll for next"
-    )
-
     companion object {
         var instance: AppWatcherService? = null
         const val BROWSER_PKG = "com.sec.android.app.sbrowser"
@@ -135,6 +113,19 @@ class AppWatcherService : AccessibilityService() {
             "com.facebook.lite",
             "com.google.android.youtube"
         )
+    }
+
+    // Dùng InputMethodManager để detect keyboard pkg — đúng cách, không hardcode
+    private fun isInputMethodPackage(pkg: String): Boolean {
+        return try {
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.enabledInputMethodList?.any { it.packageName == pkg } == true
+        } catch (e: Exception) { false }
+    }
+
+    private fun isBlockedUrl(url: String): Boolean {
+        val lower = url.lowercase().trim()
+        return blockedKeywords.any { lower.contains(it) }
     }
 
     override fun onServiceConnected() {
@@ -150,30 +141,28 @@ class AppWatcherService : AccessibilityService() {
         event ?: return
         val pkg = event.packageName?.toString() ?: return
         if (pkg == packageName || pkg == "com.android.systemui") return
+        // Dùng InputMethodManager để filter keyboard — không dismiss overlay khi gõ
+        if (isInputMethodPackage(pkg)) return
 
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                // Luôn update lastForegroundPkg cho browser và reset URL khi tab switch
                 if (pkg == BROWSER_PKG) {
-                    // Luôn update lastForegroundPkg cho browser để urlScanRunnable hoạt động
                     lastForegroundPkg = BROWSER_PKG
-                    // Luôn reset URL khi tab switch
                     lastScannedUrl = ""
                     handler.postDelayed({ scanBrowserUrl() }, 300)
                     handler.postDelayed({ scanBrowserUrl() }, 800)
                 }
-                // Chỉ xử lý foreground change khi overlay không hiện
-                // (tránh dismiss overlay khi keyboard xuất hiện)
-                if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
                 handleForegroundChange(pkg)
             }
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
-                if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
                 try {
                     val focusedPkg = windows?.firstOrNull { it.isFocused }
                         ?.root?.packageName?.toString()
                     if (focusedPkg != null &&
                         focusedPkg != packageName &&
                         focusedPkg != "com.android.systemui" &&
+                        !isInputMethodPackage(focusedPkg) &&
                         focusedPkg != lastForegroundPkg) {
                         handleForegroundChange(focusedPkg)
                         if (focusedPkg == BROWSER_PKG) {
@@ -186,17 +175,12 @@ class AppWatcherService : AccessibilityService() {
         }
     }
 
-    // ── FB/YT Content Scanner ─────────────────────────────────────────────────
+    // ── FB/YT Reels/Shorts Detection ─────────────────────────────────────────
 
     private fun scanAppForEntertainContent(pkg: String) {
-        // Nếu đang trong cooldown và chưa cho phép dùng để làm việc → bỏ qua
         if (CooldownState.isInCooldown()) return
-
-        // Nếu đang trong session làm việc (💼) → không block
         val currentSession = TimerService.currentIntention
         if (currentSession.startsWith("💼")) return
-
-        // Nếu đang trong session giải trí (🎮) → đã được approve, không cần detect
         if (currentSession.startsWith("🎮") && TimerService.isRunningFor(pkg)) return
 
         try {
@@ -209,76 +193,38 @@ class AppWatcherService : AccessibilityService() {
                 if (now - lastEntertainDetectTime < ENTERTAIN_DETECT_COOLDOWN_MS) return
                 if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
                 if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
-
                 lastEntertainDetectTime = now
                 lastPopupTime = now
-                DebugLog.add("🎮 Detected entertain content in $pkg → blocking")
-
-                // Dừng session làm việc nếu có (để start session giải trí mới)
-                if (TimerService.isRunningFor(pkg)) {
-                    TimerService.stop(this)
-                }
+                DebugLog.add("🎮 Detected entertain content in $pkg")
+                if (TimerService.isRunningFor(pkg)) TimerService.stop(this)
                 popupShownForPkg = ""
                 handler.post {
                     blockingOverlay.show("⚠️ Nội dung giải trí!", pkg, "reels_detected")
                 }
             }
-        } catch (e: Exception) {
-            // Không log để tránh spam
-        }
+        } catch (_: Exception) {}
     }
 
     private fun detectEntertainContent(root: AccessibilityNodeInfo, pkg: String): Boolean {
-        // Collect tất cả text visible trên màn hình
         val allTexts = mutableListOf<String>()
-        collectAllText(root, allTexts, depth = 0)
-        val combinedText = allTexts.joinToString(" ").lowercase()
-
+        collectAllText(root, allTexts, 0)
+        val text = allTexts.joinToString(" ").lowercase()
         return when (pkg) {
-            "com.facebook.katana", "com.facebook.lite" -> detectFBReels(combinedText)
-            "com.google.android.youtube" -> detectYTShorts(combinedText)
+            "com.facebook.katana", "com.facebook.lite" -> {
+                val hasReels = text.contains("reels") || text.contains("reel")
+                val hasPattern = (text.contains("âm thanh gốc") || text.contains("original audio")) &&
+                    text.contains("theo dõi")
+                if (hasReels) DebugLog.add("🎯 FB Reels detected")
+                if (hasPattern) DebugLog.add("🎯 FB Reels pattern detected")
+                hasReels || hasPattern
+            }
+            "com.google.android.youtube" -> {
+                val hasShorts = text.contains("shorts")
+                if (hasShorts) DebugLog.add("🎯 YT Shorts detected")
+                hasShorts
+            }
             else -> false
         }
-    }
-
-    private fun detectFBReels(text: String): Boolean {
-        // FB Reels thường có: "Reels" label + Like/Comment/Share buttons theo chiều dọc
-        val hasReelsLabel = text.contains("reels") || text.contains("reel")
-        val hasEngagementButtons = (text.contains("thích") || text.contains("like")) &&
-                (text.contains("bình luận") || text.contains("comment"))
-
-        // Hoặc detect pattern video autoplay
-        val hasVideoPattern = text.contains("âm thanh gốc") ||
-                text.contains("original audio") ||
-                text.contains("xem thêm") && text.contains("theo dõi")
-
-        if (hasReelsLabel) {
-            DebugLog.add("🎯 FB Reels detected (reels label)")
-            return true
-        }
-        if (hasEngagementButtons && hasVideoPattern) {
-            DebugLog.add("🎯 FB Reels detected (engagement pattern)")
-            return true
-        }
-        return false
-    }
-
-    private fun detectYTShorts(text: String): Boolean {
-        // YT Shorts thường có: "Shorts" label hoặc vertical video UI
-        val hasShortsLabel = text.contains("shorts") || text.contains("short")
-        val hasYTShortPattern = text.contains("đăng ký") &&
-                (text.contains("thích") || text.contains("like")) &&
-                text.contains("bình luận")
-
-        if (hasShortsLabel) {
-            DebugLog.add("🎯 YT Shorts detected (shorts label)")
-            return true
-        }
-        if (hasYTShortPattern) {
-            DebugLog.add("🎯 YT Shorts detected (UI pattern)")
-            return true
-        }
-        return false
     }
 
     private fun collectAllText(node: AccessibilityNodeInfo, result: MutableList<String>, depth: Int) {
@@ -292,22 +238,16 @@ class AppWatcherService : AccessibilityService() {
         }
     }
 
-    // ── Browser URL Scanner ───────────────────────────────────────────────────
+    // ── Foreground & Browser Logic ────────────────────────────────────────────
 
     private fun handleForegroundChange(pkg: String) {
-        // Chỉ dismiss overlay khi chuyển sang watched app khác
-        // KHÔNG dismiss khi keyboard/system foreground (vì sẽ làm overlay biến mất khi nhập text)
-        val isWatchedOtherApp = pkg != BROWSER_PKG && DataStore.isWatchedApp(this, pkg)
-        if (isWatchedOtherApp && ::blockingOverlay.isInitialized && blockingOverlay.isShowing) {
+        // Dismiss overlay chỉ khi chuyển sang watched app khác (không phải keyboard)
+        val isWatchedOther = pkg != BROWSER_PKG && DataStore.isWatchedApp(this, pkg)
+        if (isWatchedOther && ::blockingOverlay.isInitialized && blockingOverlay.isShowing) {
             blockingOverlay.dismiss()
         }
         if (pkg == lastForegroundPkg) return
-        // Chỉ update lastForegroundPkg nếu là app thật (không phải keyboard/system)
-        val isSystemPkg = pkg.startsWith("com.android.") ||
-            pkg.startsWith("com.samsung.android.input") ||
-            pkg.startsWith("com.sec.android.inputmethod") ||
-            pkg == "com.google.android.inputmethod.latin"
-        if (!isSystemPkg) lastForegroundPkg = pkg
+        lastForegroundPkg = pkg
         DebugLog.add("📱 Foreground: $pkg")
 
         if (!DataStore.isWatchedApp(this, pkg)) return
@@ -316,6 +256,7 @@ class AppWatcherService : AccessibilityService() {
         if (pkg == BROWSER_PKG) {
             onBrowserForegrounded()
         } else {
+            // Cooldown → block tất cả social apps
             if (CooldownState.isInCooldown()) {
                 val now = System.currentTimeMillis()
                 if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
@@ -338,14 +279,14 @@ class AppWatcherService : AccessibilityService() {
         if (CooldownState.isInCooldown()) {
             val currentUrl = lastScannedUrl
             if (currentUrl.isEmpty()) return
-            if (isBlockedUrl(currentUrl)) return
-            // Nếu timer đang chạy cho session làm việc → không hỏi lại
+            if (isBlockedUrl(currentUrl)) return // blocked → scanBrowserUrl xử lý
+            // URL ok trong cooldown → show popup nhập mục đích làm việc mới
             if (TimerService.isRunningFor(BROWSER_PKG)) return
             val now = System.currentTimeMillis()
             if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
             lastPopupTime = now
             popupShownForPkg = BROWSER_PKG
-            DebugLog.add("✅ Work URL in cooldown → show work popup: $currentUrl")
+            DebugLog.add("✅ Work URL in cooldown → show work popup")
             handler.post {
                 blockingOverlay.show(DataStore.getAppName(this, BROWSER_PKG), BROWSER_PKG, null)
             }
@@ -391,10 +332,7 @@ class AppWatcherService : AccessibilityService() {
         }
     }
 
-    private fun isBlockedUrl(url: String): Boolean {
-        val lower = url.lowercase().trim()
-        return blockedKeywords.any { lower.contains(it) }
-    }
+    // ── URL Scanner ───────────────────────────────────────────────────────────
 
     private fun scanBrowserUrl() {
         try {
@@ -404,6 +342,7 @@ class AppWatcherService : AccessibilityService() {
 
             if (url.isNullOrEmpty()) return
             val isBlocked = isBlockedUrl(url)
+            // Chỉ skip nếu URL không đổi VÀ không bị block
             if (!isBlocked && url == lastScannedUrl) return
             if (url != lastScannedUrl) {
                 lastScannedUrl = url
@@ -469,8 +408,7 @@ class AppWatcherService : AccessibilityService() {
             try {
                 val nodes = root.findAccessibilityNodeInfosByViewId(resId)
                 if (nodes.isNotEmpty()) {
-                    val text = nodes[0].text?.toString()
-                        ?: nodes[0].contentDescription?.toString()
+                    val text = nodes[0].text?.toString() ?: nodes[0].contentDescription?.toString()
                     nodes.forEach { it.recycle() }
                     if (!text.isNullOrEmpty() && text.length > 3) return text
                 }
