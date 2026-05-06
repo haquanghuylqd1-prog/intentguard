@@ -153,9 +153,10 @@ class AppWatcherService : AccessibilityService() {
 
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                // Tab switch trong Samsung Internet: cùng pkg nhưng URL thay đổi
-                // LUÔN reset URL khi có window state change trong browser
                 if (pkg == BROWSER_PKG) {
+                    // Luôn update lastForegroundPkg cho browser để urlScanRunnable hoạt động
+                    lastForegroundPkg = BROWSER_PKG
+                    // Luôn reset URL khi tab switch
                     lastScannedUrl = ""
                     handler.postDelayed({ scanBrowserUrl() }, 300)
                     handler.postDelayed({ scanBrowserUrl() }, 800)
@@ -338,9 +339,10 @@ class AppWatcherService : AccessibilityService() {
             val currentUrl = lastScannedUrl
             if (currentUrl.isEmpty()) return
             if (isBlockedUrl(currentUrl)) return
+            // Nếu timer đang chạy cho session làm việc → không hỏi lại
+            if (TimerService.isRunningFor(BROWSER_PKG)) return
             val now = System.currentTimeMillis()
             if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
-            if (popupShownForPkg == BROWSER_PKG) return
             lastPopupTime = now
             popupShownForPkg = BROWSER_PKG
             DebugLog.add("✅ Work URL in cooldown → show work popup: $currentUrl")
