@@ -401,16 +401,12 @@ class AppWatcherService : AccessibilityService() {
             root.recycle()
 
             if (url.isNullOrEmpty()) return
-            // Check blocked ngay cả khi đang gõ (partial URL)
-            // Chỉ skip nếu URL giống hệt lần trước (không thay đổi gì)
             val isBlocked = isBlockedUrl(url)
             if (!isBlocked && url == lastScannedUrl) return
             if (url != lastScannedUrl) {
                 lastScannedUrl = url
                 DebugLog.add("🌐 URL: $url")
             }
-
-            val isBlocked = isBlockedUrl(url)
 
             if (TimerService.isRunningFor(BROWSER_PKG)) {
                 if (isBlocked) {
