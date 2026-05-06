@@ -151,6 +151,9 @@ class AppWatcherService : AccessibilityService() {
         val pkg = event.packageName?.toString() ?: return
         if (pkg == packageName || pkg == "com.android.systemui") return
 
+        // Nếu overlay đang hiện → ignore window events để tránh dismiss/re-show
+        if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
+
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 handleForegroundChange(pkg)
@@ -288,11 +291,19 @@ class AppWatcherService : AccessibilityService() {
     // ── Browser URL Scanner ───────────────────────────────────────────────────
 
     private fun handleForegroundChange(pkg: String) {
-        if (pkg != BROWSER_PKG && ::blockingOverlay.isInitialized && blockingOverlay.isShowing) {
+        // Chỉ dismiss overlay khi chuyển sang watched app khác
+        // KHÔNG dismiss khi keyboard/system foreground (vì sẽ làm overlay biến mất khi nhập text)
+        val isWatchedOtherApp = pkg != BROWSER_PKG && DataStore.isWatchedApp(this, pkg)
+        if (isWatchedOtherApp && ::blockingOverlay.isInitialized && blockingOverlay.isShowing) {
             blockingOverlay.dismiss()
         }
         if (pkg == lastForegroundPkg) return
-        lastForegroundPkg = pkg
+        // Chỉ update lastForegroundPkg nếu là app thật (không phải keyboard/system)
+        val isSystemPkg = pkg.startsWith("com.android.") ||
+            pkg.startsWith("com.samsung.android.input") ||
+            pkg.startsWith("com.sec.android.inputmethod") ||
+            pkg == "com.google.android.inputmethod.latin"
+        if (!isSystemPkg) lastForegroundPkg = pkg
         DebugLog.add("📱 Foreground: $pkg")
 
         if (!DataStore.isWatchedApp(this, pkg)) return
@@ -301,7 +312,6 @@ class AppWatcherService : AccessibilityService() {
         if (pkg == BROWSER_PKG) {
             onBrowserForegrounded()
         } else {
-            // Cooldown → block tất cả app giải trí
             if (CooldownState.isInCooldown()) {
                 val now = System.currentTimeMillis()
                 if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
