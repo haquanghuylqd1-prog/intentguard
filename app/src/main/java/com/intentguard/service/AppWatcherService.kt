@@ -151,19 +151,22 @@ class AppWatcherService : AccessibilityService() {
         val pkg = event.packageName?.toString() ?: return
         if (pkg == packageName || pkg == "com.android.systemui") return
 
-        // Nếu overlay đang hiện → ignore window events để tránh dismiss/re-show
-        if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
-
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                handleForegroundChange(pkg)
+                // Tab switch trong Samsung Internet: cùng pkg nhưng URL thay đổi
+                // LUÔN reset URL khi có window state change trong browser
                 if (pkg == BROWSER_PKG) {
                     lastScannedUrl = ""
                     handler.postDelayed({ scanBrowserUrl() }, 300)
                     handler.postDelayed({ scanBrowserUrl() }, 800)
                 }
+                // Chỉ xử lý foreground change khi overlay không hiện
+                // (tránh dismiss overlay khi keyboard xuất hiện)
+                if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
+                handleForegroundChange(pkg)
             }
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
+                if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
                 try {
                     val focusedPkg = windows?.firstOrNull { it.isFocused }
                         ?.root?.packageName?.toString()
@@ -397,9 +400,15 @@ class AppWatcherService : AccessibilityService() {
             val url = extractUrlFromTree(root)
             root.recycle()
 
-            if (url.isNullOrEmpty() || url == lastScannedUrl) return
-            lastScannedUrl = url
-            DebugLog.add("🌐 URL: $url")
+            if (url.isNullOrEmpty()) return
+            // Check blocked ngay cả khi đang gõ (partial URL)
+            // Chỉ skip nếu URL giống hệt lần trước (không thay đổi gì)
+            val isBlocked = isBlockedUrl(url)
+            if (!isBlocked && url == lastScannedUrl) return
+            if (url != lastScannedUrl) {
+                lastScannedUrl = url
+                DebugLog.add("🌐 URL: $url")
+            }
 
             val isBlocked = isBlockedUrl(url)
 
