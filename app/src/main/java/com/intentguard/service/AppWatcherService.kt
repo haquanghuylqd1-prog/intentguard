@@ -146,6 +146,11 @@ class AppWatcherService : AccessibilityService() {
 
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                // Khi về home → reset lastForegroundPkg để lần sau vào browser trigger lại
+                if (pkg.contains("launcher", ignoreCase = true) ||
+                    pkg == "com.samsung.android.app.resolver") {
+                    lastForegroundPkg = ""
+                }
                 // Luôn update lastForegroundPkg cho browser và reset URL khi tab switch
                 if (pkg == BROWSER_PKG) {
                     lastForegroundPkg = BROWSER_PKG
@@ -342,11 +347,27 @@ class AppWatcherService : AccessibilityService() {
 
             if (url.isNullOrEmpty()) return
             val isBlocked = isBlockedUrl(url)
-            // Chỉ skip nếu URL không đổi VÀ không bị block
             if (!isBlocked && url == lastScannedUrl) return
             if (url != lastScannedUrl) {
                 lastScannedUrl = url
                 DebugLog.add("🌐 URL: $url")
+            }
+
+            // COOLDOWN CHECK TRƯỚC TIÊN — không cho bypass dù đang có session làm việc
+            if (isBlocked && CooldownState.isInCooldown()) {
+                val now = System.currentTimeMillis()
+                if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
+                if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
+                lastPopupTime = now
+                // Dừng session làm việc nếu có
+                if (TimerService.isRunningFor(BROWSER_PKG)) {
+                    DebugLog.add("🔒 Cooldown: stop work session, block entertain url=$url")
+                    TimerService.stop(this)
+                } else {
+                    DebugLog.add("🔒 COOLDOWN BLOCK! url=$url (${CooldownState.remainingMinutes()}p còn)")
+                }
+                handler.post { blockingOverlay.showCooldown(CooldownState.remainingMinutes()) }
+                return
             }
 
             if (TimerService.isRunningFor(BROWSER_PKG)) {
@@ -374,18 +395,11 @@ class AppWatcherService : AccessibilityService() {
                 val now = System.currentTimeMillis()
                 if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
                 if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
-
-                if (CooldownState.isInCooldown()) {
-                    lastPopupTime = now
-                    DebugLog.add("🔒 COOLDOWN BLOCK! url=$url (${CooldownState.remainingMinutes()}p còn)")
-                    handler.post { blockingOverlay.showCooldown(CooldownState.remainingMinutes()) }
-                } else {
-                    lastPopupTime = now
-                    DebugLog.add("🚫 BLOCKED! url=$url")
-                    popupShownForPkg = ""
-                    handler.post {
-                        blockingOverlay.show("⚠️ Nội dung bị chặn!", BROWSER_PKG, url)
-                    }
+                lastPopupTime = now
+                DebugLog.add("🚫 BLOCKED! url=$url")
+                popupShownForPkg = ""
+                handler.post {
+                    blockingOverlay.show("⚠️ Nội dung bị chặn!", BROWSER_PKG, url)
                 }
             }
         } catch (e: Exception) {
