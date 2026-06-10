@@ -7,6 +7,7 @@ import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.InputMethodManager
+import android.widget.Toast
 import com.intentguard.data.DataStore
 import com.intentguard.ui.IntentionPopupActivity
 import java.text.SimpleDateFormat
@@ -56,6 +57,10 @@ class AppWatcherService : AccessibilityService() {
     private var lastEntertainDetectTime = 0L
     private val ENTERTAIN_DETECT_COOLDOWN_MS = 5000L
 
+    // FB Reels counter state
+    private var lastReelSignature = ""
+    private var lastReelCountTime = 0L
+
     private lateinit var blockingOverlay: BlockingOverlayManager
     private val handler = Handler(Looper.getMainLooper())
 
@@ -72,7 +77,9 @@ class AppWatcherService : AccessibilityService() {
     private val appContentScanRunnable = object : Runnable {
         override fun run() {
             val pkg = lastForegroundPkg
-            if (pkg in SOCIAL_PKGS && !TimerService.isRunningFor(pkg)) {
+            // Scan FB/YT mọi lúc — KỂ CẢ đang trong session 💼 làm việc
+            // (logic skip khi đang trong session 🎮 hợp lệ nằm bên trong)
+            if (pkg in SOCIAL_PKGS) {
                 scanAppForEntertainContent(pkg)
             }
             handler.postDelayed(this, 2000)
@@ -113,6 +120,9 @@ class AppWatcherService : AccessibilityService() {
             "com.facebook.lite",
             "com.google.android.youtube"
         )
+        val FB_PKGS = setOf("com.facebook.katana", "com.facebook.lite")
+        const val REELS_LIMIT = 3           // Cho xem tối đa 3 reels
+        const val MIN_REEL_INTERVAL_MS = 3000L  // Tối thiểu 3s giữa 2 lần đếm reel mới
     }
 
     // Dùng InputMethodManager để detect keyboard pkg — đúng cách, không hardcode
@@ -179,9 +189,17 @@ class AppWatcherService : AccessibilityService() {
 
     private fun scanAppForEntertainContent(pkg: String) {
         if (CooldownState.isInCooldown()) return
+
+        // ── Facebook: đếm reels, reel thứ 4 → cooldown 1h ──
+        if (pkg in FB_PKGS) {
+            scanFacebookReels(pkg)
+            return
+        }
+
+        // ── YouTube: detect Shorts KỂ CẢ trong session 💼 làm việc ──
+        // Chỉ skip khi đang trong session giải trí hợp lệ (🎮 hoặc ⚠️)
         val currentSession = TimerService.currentIntention
-        if (currentSession.startsWith("💼")) return
-        if (currentSession.startsWith("🎮") && TimerService.isRunningFor(pkg)) return
+        if (TimerService.isRunningFor(pkg) && !currentSession.startsWith("💼")) return
 
         try {
             val root = rootInActiveWindow ?: return
@@ -225,6 +243,130 @@ class AppWatcherService : AccessibilityService() {
             }
             else -> false
         }
+    }
+
+    // ── FB Reels: popup khoá 🎮 ngay khi detect (kể cả session 💼),
+    //    đếm 3 reels free → reel thứ 4 = cooldown 1h ──────────────────────────
+
+    private fun scanFacebookReels(pkg: String) {
+        // Đang hiện overlay (popup/cooldown) → không đếm reels phía sau
+        if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
+        try {
+            val root = rootInActiveWindow ?: return
+            val texts = mutableListOf<String>()
+            collectAllText(root, texts, 0)
+            root.recycle()
+
+            val joined = texts.joinToString(" ").lowercase()
+            val isReel = joined.contains("reels") || joined.contains("reel") ||
+                ((joined.contains("âm thanh gốc") || joined.contains("original audio")) &&
+                    joined.contains("theo dõi"))
+            if (!isReel) return
+
+            // Cooldown đã hết mà count còn > limit → chu kỳ mới, reset về 0
+            if (DataStore.getReelsCount(this) > REELS_LIMIT) {
+                DataStore.setReelsCount(this, 0)
+                lastReelSignature = ""
+                DebugLog.add("🔄 Reels counter reset (cooldown đã hết)")
+            }
+
+            // ── Bước 1: Đếm reel mới (chống đếm trùng + chống lướt quá nhanh) ──
+            var count = DataStore.getReelsCount(this)
+            var justCounted = false
+            val signature = buildReelSignature(texts)
+            if (signature.isNotEmpty() && !isSameReel(signature, lastReelSignature)) {
+                val now = System.currentTimeMillis()
+                if (now - lastReelCountTime >= MIN_REEL_INTERVAL_MS) {
+                    lastReelSignature = signature
+                    lastReelCountTime = now
+                    count += 1
+                    DataStore.setReelsCount(this, count)
+                    justCounted = true
+                    DebugLog.add("🎬 FB Reel #$count")
+                }
+            }
+
+            // ── Bước 2: Reel thứ 4 → khoá Facebook 1h ──
+            if (count > REELS_LIMIT) {
+                if (justCounted) {
+                    DebugLog.add("🔒 Reel thứ $count → COOLDOWN 1h, khoá Facebook!")
+                    if (TimerService.isRunningFor(pkg)) TimerService.stop(this)
+                    CooldownState.startCooldown(1, pkg)
+                    popupShownForPkg = ""
+                    handler.post {
+                        blockingOverlay.showCooldown(CooldownState.remainingMinutes())
+                    }
+                }
+                return
+            }
+
+            // ── Bước 3: Chưa có session giải trí hợp lệ → popup khoá 🎮 NGAY
+            //    (kể cả đang trong session 💼 làm việc — dừng session đó luôn) ──
+            val inEntertainSession = TimerService.isRunningFor(pkg) &&
+                (TimerService.currentIntention.startsWith("🎮") ||
+                    TimerService.currentIntention.startsWith("⚠️"))
+            if (!inEntertainSession) {
+                val now = System.currentTimeMillis()
+                if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
+                lastPopupTime = now
+                if (TimerService.isRunningFor(pkg)) {
+                    DebugLog.add("⚠️ Reel trong session 💼 → dừng session làm việc!")
+                    TimerService.stop(this)
+                }
+                popupShownForPkg = ""
+                DebugLog.add("🎮 Reel detected → popup khoá Giải trí (reel $count/$REELS_LIMIT)")
+                handler.post {
+                    blockingOverlay.show(
+                        "⚠️ Nội dung giải trí! (Reel ${maxOf(count, 1)}/$REELS_LIMIT)",
+                        pkg, "reels_detected"
+                    )
+                }
+                return
+            }
+
+            // ── Bước 4: Đang trong session giải trí → toast đếm ──
+            if (justCounted) {
+                handler.post {
+                    Toast.makeText(
+                        this,
+                        "🎬 Reel $count/$REELS_LIMIT — reel thứ ${REELS_LIMIT + 1} là khoá Facebook 1h đó nha!",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        } catch (e: Exception) {
+            DebugLog.add("❌ Reels scan error: ${e.message}")
+        }
+    }
+
+    // Tạo "chữ ký" của reel hiện tại từ text trên màn hình
+    // (tên tác giả, caption...) — lọc bỏ số like/view và chữ chung chung
+    private val reelGenericWords = setOf(
+        "reels", "reel", "theo dõi", "đang theo dõi", "thích", "bình luận",
+        "chia sẻ", "gửi", "âm thanh gốc", "original audio", "follow",
+        "following", "like", "comment", "share", "send", "facebook"
+    )
+
+    private fun buildReelSignature(texts: List<String>): String {
+        return texts.asSequence()
+            .map { it.trim() }
+            .filter { it.length in 6..120 }
+            .filter { t -> t.lowercase() !in reelGenericWords }
+            .filter { !it.matches(Regex("^[\\d.,kKmMtr\\s]+$")) } // bỏ số like/view
+            .distinct()
+            .take(6)
+            .joinToString("|")
+    }
+
+    // 2 chữ ký trùng >40% dòng → vẫn là reel cũ (like count đổi, mở comment...)
+    private fun isSameReel(a: String, b: String): Boolean {
+        if (b.isEmpty()) return false
+        if (a == b) return true
+        val setA = a.split("|").toSet()
+        val setB = b.split("|").toSet()
+        if (setA.isEmpty() || setB.isEmpty()) return false
+        val common = setA.intersect(setB).size
+        return common.toDouble() / minOf(setA.size, setB.size) > 0.4
     }
 
     private fun collectAllText(node: AccessibilityNodeInfo, result: MutableList<String>, depth: Int) {

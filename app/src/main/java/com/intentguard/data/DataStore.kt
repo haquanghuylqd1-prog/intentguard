@@ -45,6 +45,15 @@ object DataStore {
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
 
+    // ── FB Reels Counter (đếm reels → cooldown sau reel thứ 4) ────────────────
+
+    fun getReelsCount(context: Context): Int =
+        prefs(context).getInt("fb_reels_count", 0)
+
+    fun setReelsCount(context: Context, count: Int) {
+        prefs(context).edit().putInt("fb_reels_count", count).apply()
+    }
+
     // ── Sessions ──────────────────────────────────────────────────────────────
 
     fun getSessions(context: Context): List<Session> {

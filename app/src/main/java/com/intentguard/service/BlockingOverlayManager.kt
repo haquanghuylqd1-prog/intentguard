@@ -15,6 +15,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import com.intentguard.R
 import com.intentguard.data.DataStore
 
@@ -96,8 +97,23 @@ class BlockingOverlayManager(private val context: Context) {
         }
         updateType(isEntertain)
 
-        btnTypeWork.setOnClickListener { updateType(false) }
-        btnTypeEntertain.setOnClickListener { updateType(true) }
+        // Reels/Shorts detected → KHOÁ CỨNG loại 🎮 Giải trí, không cho chọn Làm việc
+        val isReelsLock = blockedUrl == "reels_detected"
+        if (isReelsLock) {
+            updateType(true)
+            tvSelectedType.text = "🎮 Giải trí (Reels/Shorts — không đổi được)"
+            btnTypeWork.alpha = 0.3f
+            btnTypeWork.setOnClickListener {
+                Toast.makeText(context,
+                    "Đang xem Reels/Shorts → chỉ tính là 🎮 Giải trí thôi bro!",
+                    Toast.LENGTH_SHORT).show()
+            }
+            btnTypeEntertain.setOnClickListener { updateType(true) }
+            etIntention.hint = "Bro định giải trí gì?"
+        } else {
+            btnTypeWork.setOnClickListener { updateType(false) }
+            btnTypeEntertain.setOnClickListener { updateType(true) }
+        }
 
         val presetMap = mapOf(
             R.id.btn5 to 5, R.id.btn10 to 10,
