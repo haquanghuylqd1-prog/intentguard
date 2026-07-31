@@ -96,6 +96,15 @@ class IntentionPopupActivity : AppCompatActivity() {
                 etIntention.requestFocus()
                 return@setOnClickListener
             }
+
+            // Rule: 3 lần liên tiếp cùng mục đích (cùng app) → tự cooldown 1h, không cho start
+            val blocked = com.intentguard.service.AppWatcherService.instance
+                ?.checkRepeatedIntentionAndMaybeBlock(pkg, intention, pkg) ?: false
+            if (blocked) {
+                finish()
+                return@setOnClickListener
+            }
+
             val intentionText = if (blockedUrl != null) "⚠️ $intention" else intention
             TimerService.startFor(this, pkg, appName, intentionText, selectedMinutes)
             finish()

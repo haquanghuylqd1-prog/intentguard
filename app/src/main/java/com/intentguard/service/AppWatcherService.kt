@@ -69,18 +69,31 @@ class AppWatcherService : AccessibilityService() {
             if (lastForegroundPkg == BROWSER_PKG) {
                 scanBrowserUrl()
                 ensureBrowserOverlayShowing()
+                trackBrowserContinuousUsage()
             }
             handler.postDelayed(this, 500)
         }
     }
 
+    // Track thời gian dùng liên tục cho web Facebook/YouTube/giải trí (dựa trên URL đang scan).
+    // Web khác (không thuộc nhóm này) không bị áp rule 20p liên tục.
+    private fun trackBrowserContinuousUsage() {
+        if (CooldownState.isInCooldown()) return
+        val contentType = DataStore.classifyBrowserContent(lastScannedUrl) ?: return
+        trackContinuousAndMaybeBlock("browser:$contentType", BROWSER_PKG)
+    }
+
     private val appContentScanRunnable = object : Runnable {
         override fun run() {
             val pkg = lastForegroundPkg
-            // Scan FB/YT mọi lúc — KỂ CẢ đang trong session 💼 làm việc
+            // Scan FB/YT/Shopee mọi lúc — KỂ CẢ đang trong session 💼 làm việc
             // (logic skip khi đang trong session 🎮 hợp lệ nằm bên trong)
             if (pkg in SOCIAL_PKGS) {
-                scanAppForEntertainContent(pkg)
+                // Track thời gian dùng liên tục cho app này — >20p liên tục thì tự cooldown,
+                // bất kể có đang trong 1 session hợp lệ hay không.
+                if (!trackContinuousAndMaybeBlock(pkg, pkg)) {
+                    scanAppForEntertainContent(pkg)
+                }
             }
             handler.postDelayed(this, 2000)
         }
@@ -115,10 +128,12 @@ class AppWatcherService : AccessibilityService() {
     companion object {
         var instance: AppWatcherService? = null
         const val BROWSER_PKG = "com.sec.android.app.sbrowser"
+        const val SHOPEE_PKG = "com.shopee.vn"
         val SOCIAL_PKGS = setOf(
             "com.facebook.katana",
             "com.facebook.lite",
-            "com.google.android.youtube"
+            "com.google.android.youtube",
+            "com.shopee.vn"
         )
         val FB_PKGS = setOf("com.facebook.katana", "com.facebook.lite")
         const val REELS_LIMIT = 3           // Cho xem tối đa 3 reels
@@ -145,6 +160,45 @@ class AppWatcherService : AccessibilityService() {
         handler.postDelayed(urlScanRunnable, 1000)
         handler.postDelayed(appContentScanRunnable, 2000)
         DebugLog.add("✅ Service connected")
+    }
+
+    // ── Continuous-usage guard (rule: >20 phút liên tục 1 loại nội dung → cooldown 1h) ──
+    // [trackingKey]: packageName cho app riêng (FB/YT/Shopee), hoặc "browser:<contentType>" cho web.
+    // Gọi định kỳ mỗi lần scan xác nhận vẫn đang xem đúng nội dung đó.
+    // Trả về true nếu VỪA trigger cooldown (caller nên dừng xử lý tiếp sau khi gọi).
+    private fun trackContinuousAndMaybeBlock(trackingKey: String, pkgForCooldown: String): Boolean {
+        if (CooldownState.isInCooldown()) return false
+        val minutes = DataStore.updateContinuousUsage(this, trackingKey)
+        if (minutes >= DataStore.CONTINUOUS_LIMIT_MINUTES) {
+            DebugLog.add("🔒 Dùng liên tục ${minutes}p ($trackingKey) → COOLDOWN 1h!")
+            DataStore.clearContinuousUsage(this, trackingKey)
+            DataStore.clearRepeatState(this, trackingKey)
+            if (TimerService.isRunningFor(pkgForCooldown)) TimerService.stop(this)
+            CooldownState.startCooldown(1, pkgForCooldown)
+            popupShownForPkg = ""
+            handler.post { blockingOverlay.showCooldown(CooldownState.remainingMinutes()) }
+            return true
+        }
+        return false
+    }
+
+    // ── Repeated-intention guard (rule: 3 lần liên tiếp cùng mục đích → cooldown 1h) ──
+    // Gọi khi 1 session MỚI bắt đầu (từ TimerService.startFor caller) với [intention] đã nhập.
+    // Nếu đây là lần lặp thứ REPEAT_LIMIT trở lên (cùng nội dung, liên tiếp) → cooldown ngay,
+    // không cho session này tiếp tục chạy.
+    fun checkRepeatedIntentionAndMaybeBlock(trackingKey: String, intention: String, pkgForCooldown: String): Boolean {
+        val count = DataStore.registerIntentionAttempt(this, trackingKey, intention)
+        if (count >= DataStore.REPEAT_LIMIT) {
+            DebugLog.add("🔒 Mục đích lặp lại $count lần liên tiếp ($trackingKey) → COOLDOWN 1h!")
+            DataStore.clearRepeatState(this, trackingKey)
+            DataStore.clearContinuousUsage(this, trackingKey)
+            if (TimerService.isRunningFor(pkgForCooldown)) TimerService.stop(this)
+            CooldownState.startCooldown(1, pkgForCooldown)
+            popupShownForPkg = ""
+            handler.post { blockingOverlay.showCooldown(CooldownState.remainingMinutes()) }
+            return true
+        }
+        return false
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -605,6 +659,8 @@ class AppWatcherService : AccessibilityService() {
             .removePrefix("https://").removePrefix("http://")
             .removePrefix("www.").split("/")[0].split("?")[0]
     }
+
+    fun getLastScannedUrl(): String = lastScannedUrl
 
     fun resetPopupState(keepUrl: String = "") {
         popupShownForPkg = ""

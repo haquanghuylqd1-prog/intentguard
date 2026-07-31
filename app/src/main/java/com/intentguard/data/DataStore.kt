@@ -39,7 +39,8 @@ object DataStore {
         AppConfig("com.facebook.lite", "Facebook Lite"),
         AppConfig("com.google.android.youtube", "YouTube"),
         AppConfig("com.sec.android.app.sbrowser", "Samsung Internet"),
-        AppConfig("com.android.chrome", "Chrome")
+        AppConfig("com.android.chrome", "Chrome"),
+        AppConfig("com.shopee.vn", "Shopee")
     )
 
     private fun prefs(context: Context): SharedPreferences =
@@ -281,5 +282,159 @@ object DataStore {
         cal.set(year, month, day, 0, 0, 0)
         cal.set(Calendar.MILLISECOND, 0)
         return cal.timeInMillis
+    }
+
+    // ── Continuous Usage Tracking (rule: >20p liên tục → cooldown 1h) ──────────
+    // "key" = định danh 1 loại nội dung đang theo dõi:
+    //   - app riêng (FB app, YouTube app, Shopee): key = packageName
+    //   - browser: key = "browser:<contentType>" (vd "browser:facebook", "browser:youtube", "browser:entertain")
+    // Nếu khoảng cách giữa lần dùng trước và lần dùng hiện tại < GAP_RESET_MS thì coi là
+    // liên tục và cộng dồn thời lượng; nếu cách xa hơn thì coi là chuỗi mới, reset về 0.
+
+    private const val KEY_CONTINUOUS_PREFIX = "continuous_"
+    const val CONTINUOUS_LIMIT_MINUTES = 20
+    const val CONTINUOUS_GAP_RESET_MS = 5 * 60_000L // > 5 phút không dùng → reset chuỗi
+
+    data class ContinuousUsage(
+        val key: String,
+        val accumulatedMs: Long,   // tổng thời gian đã dùng liên tục trong chuỗi hiện tại
+        val segmentStartMs: Long,  // thời điểm bắt đầu đoạn dùng hiện tại (chưa cộng vào accumulated)
+        val lastUpdateMs: Long     // lần cập nhật gần nhất (để tính khoảng cách ngắt quãng)
+    )
+
+    private fun continuousKey(key: String) = KEY_CONTINUOUS_PREFIX + key
+
+    fun getContinuousUsage(context: Context, key: String): ContinuousUsage? {
+        val json = prefs(context).getString(continuousKey(key), null) ?: return null
+        return try {
+            val obj = JSONObject(json)
+            ContinuousUsage(
+                key = key,
+                accumulatedMs = obj.getLong("accumulatedMs"),
+                segmentStartMs = obj.getLong("segmentStartMs"),
+                lastUpdateMs = obj.getLong("lastUpdateMs")
+            )
+        } catch (e: Exception) { null }
+    }
+
+    private fun saveContinuousUsage(context: Context, usage: ContinuousUsage) {
+        val obj = JSONObject().apply {
+            put("accumulatedMs", usage.accumulatedMs)
+            put("segmentStartMs", usage.segmentStartMs)
+            put("lastUpdateMs", usage.lastUpdateMs)
+        }
+        prefs(context).edit().putString(continuousKey(usage.key), obj.toString()).apply()
+    }
+
+    fun clearContinuousUsage(context: Context, key: String) {
+        prefs(context).edit().remove(continuousKey(key)).apply()
+    }
+
+    /**
+     * Gọi hàm này định kỳ (vd mỗi lần scan detect thấy đang xem nội dung thuộc [key]).
+     * Trả về tổng số phút đã dùng liên tục SAU khi cập nhật lần gọi này.
+     * Nếu khoảng cách tới lần gọi trước > CONTINUOUS_GAP_RESET_MS → coi là chuỗi mới (reset).
+     */
+    fun updateContinuousUsage(context: Context, key: String, nowMs: Long = System.currentTimeMillis()): Int {
+        val existing = getContinuousUsage(context, key)
+        val usage = if (existing == null || nowMs - existing.lastUpdateMs > CONTINUOUS_GAP_RESET_MS) {
+            // Chuỗi mới: bắt đầu lại từ 0
+            ContinuousUsage(key, accumulatedMs = 0L, segmentStartMs = nowMs, lastUpdateMs = nowMs)
+        } else {
+            // Vẫn trong chuỗi liên tục: cộng dồn thời gian từ lần update trước tới giờ
+            val delta = nowMs - existing.lastUpdateMs
+            existing.copy(accumulatedMs = existing.accumulatedMs + delta, lastUpdateMs = nowMs)
+        }
+        saveContinuousUsage(context, usage)
+        return (usage.accumulatedMs / 60000L).toInt()
+    }
+
+    fun getContinuousMinutes(context: Context, key: String): Int {
+        val usage = getContinuousUsage(context, key) ?: return 0
+        val now = System.currentTimeMillis()
+        if (now - usage.lastUpdateMs > CONTINUOUS_GAP_RESET_MS) return 0 // chuỗi đã hết hạn
+        return (usage.accumulatedMs / 60000L).toInt()
+    }
+
+    // ── Repeated Intention Tracking (rule: 3 lần liên tiếp cùng mục đích → cooldown 1h) ──
+    // "key" giống hệt key ở trên (packageName hoặc "browser:<contentType>").
+    // Lưu: nội dung mục đích lần gần nhất + số lần lặp lại liên tiếp.
+
+    private const val KEY_REPEAT_PREFIX = "repeat_intent_"
+    const val REPEAT_LIMIT = 3 // 3 lần liên tiếp giống nhau → lần thứ 3 trigger cooldown
+
+    private fun repeatKey(key: String) = KEY_REPEAT_PREFIX + key
+    const val REPEAT_EXPIRY_MS = 6 * 3600_000L // quá 6 tiếng không lặp lại → coi như chuỗi cũ đã hết hạn
+
+    data class RepeatState(val lastIntention: String, val count: Int, val lastAttemptMs: Long = 0L)
+
+    fun getRepeatState(context: Context, key: String): RepeatState {
+        val json = prefs(context).getString(repeatKey(key), null) ?: return RepeatState("", 0)
+        return try {
+            val obj = JSONObject(json)
+            RepeatState(
+                obj.getString("lastIntention"),
+                obj.getInt("count"),
+                obj.optLong("lastAttemptMs", 0L)
+            )
+        } catch (e: Exception) { RepeatState("", 0) }
+    }
+
+    private fun saveRepeatState(context: Context, key: String, state: RepeatState) {
+        val obj = JSONObject().apply {
+            put("lastIntention", state.lastIntention)
+            put("count", state.count)
+            put("lastAttemptMs", state.lastAttemptMs)
+        }
+        prefs(context).edit().putString(repeatKey(key), obj.toString()).apply()
+    }
+
+    fun clearRepeatState(context: Context, key: String) {
+        prefs(context).edit().remove(repeatKey(key)).apply()
+    }
+
+    // Chuẩn hoá mục đích để so sánh (bỏ emoji prefix, khoảng trắng thừa, không phân biệt hoa/thường)
+    fun normalizeIntention(intention: String): String {
+        return intention
+            .replace(Regex("^[\\p{So}\\p{Cn}\\u2600-\\u27BF]+\\s*"), "") // bỏ emoji prefix (💼/🎮/⚠️...)
+            .trim()
+            .lowercase()
+    }
+
+    /**
+     * Gọi khi 1 session cho [key] BẮT ĐẦU với [intention].
+     * Trả về số lần lặp lại liên tiếp SAU khi tính lần này (đã bao gồm lần hiện tại).
+     * Nếu mục đích khác lần trước, hoặc đã quá REPEAT_EXPIRY_MS kể từ lần trước → reset về 1.
+     * Nếu giống và còn trong hạn → tăng dần.
+     */
+    fun registerIntentionAttempt(
+        context: Context, key: String, intention: String,
+        nowMs: Long = System.currentTimeMillis()
+    ): Int {
+        val normalized = normalizeIntention(intention)
+        if (normalized.isEmpty()) {
+            clearRepeatState(context, key)
+            return 0
+        }
+        val existing = getRepeatState(context, key)
+        val hasPriorState = existing.count > 0
+        val expired = hasPriorState && nowMs - existing.lastAttemptMs > REPEAT_EXPIRY_MS
+        val newCount = if (!expired && existing.lastIntention == normalized) existing.count + 1 else 1
+        saveRepeatState(context, key, RepeatState(normalized, newCount, nowMs))
+        return newCount
+    }
+
+    // ── Browser content-type classification (dùng làm key khi track browser) ───
+    // Xác định "loại nội dung web" đang xem dựa trên URL, để phân biệt web Facebook /
+    // web YouTube / web giải trí (truyện, phim, 18+) khi tính rule liên tục & lặp lại.
+
+    fun classifyBrowserContent(url: String): String? {
+        val lower = url.lowercase()
+        return when {
+            lower.contains("facebook.com") || lower.contains("fb.com") -> "facebook"
+            lower.contains("youtube.com") || lower.contains("youtu.be") -> "youtube"
+            entertainKeywords.any { it.isNotBlank() && lower.contains(it) } -> "entertain"
+            else -> null // web khác (không thuộc nhóm bị kiểm soát theo nội dung)
+        }
     }
 }
