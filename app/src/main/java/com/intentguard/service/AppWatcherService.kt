@@ -53,6 +53,7 @@ class AppWatcherService : AccessibilityService() {
     private var popupShownForPkg = ""
     private var lastPopupTime = 0L
     private var lastScannedUrl = ""
+    private var lastBrowserContentType: String? = null
     private val POPUP_COOLDOWN_MS = 2000L
     private var lastEntertainDetectTime = 0L
     private val ENTERTAIN_DETECT_COOLDOWN_MS = 5000L
@@ -79,7 +80,7 @@ class AppWatcherService : AccessibilityService() {
     // Web khác (không thuộc nhóm này) không bị áp rule 20p liên tục.
     private fun trackBrowserContinuousUsage() {
         if (CooldownState.isInCooldown()) return
-        val contentType = DataStore.classifyBrowserContent(lastScannedUrl) ?: return
+        val contentType = lastBrowserContentType ?: DataStore.classifyBrowserContent(lastScannedUrl) ?: return
         trackContinuousAndMaybeBlock("browser:$contentType", BROWSER_PKG)
     }
 
@@ -479,9 +480,10 @@ class AppWatcherService : AccessibilityService() {
 
         if (CooldownState.isInCooldown()) {
             val currentUrl = lastScannedUrl
-            if (currentUrl.isEmpty()) return
-            if (isBlockedUrl(currentUrl)) return // blocked → scanBrowserUrl xử lý
-            // URL ok trong cooldown → show popup nhập mục đích làm việc mới
+            val controlledContent = lastBrowserContentType ?: DataStore.classifyBrowserContent(currentUrl)
+            if (currentUrl.isEmpty() && controlledContent == null) return
+            if (isBlockedUrl(currentUrl) || controlledContent != null) return // nội dung bị quản lý → scanner xử lý cooldown
+            // URL công việc bình thường trong cooldown → show popup nhập mục đích làm việc mới
             if (TimerService.isRunningFor(BROWSER_PKG)) return
             val now = System.currentTimeMillis()
             if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
@@ -539,35 +541,39 @@ class AppWatcherService : AccessibilityService() {
         try {
             val root = rootInActiveWindow ?: return
             val url = extractUrlFromTree(root)
+            val contentType = detectBrowserContent(root, url)
             root.recycle()
 
-            if (url.isNullOrEmpty()) return
-            val isBlocked = isBlockedUrl(url)
-            if (!isBlocked && url == lastScannedUrl) return
-            if (url != lastScannedUrl) {
-                lastScannedUrl = url
-                DebugLog.add("🌐 URL: $url")
+            if (url.isNullOrEmpty() && contentType == null) return
+            val safeUrl = url ?: ""
+            val isBlocked = isBlockedUrl(safeUrl)
+            val isControlled = contentType != null
+            lastBrowserContentType = contentType
+            if (!isBlocked && !isControlled && safeUrl == lastScannedUrl) return
+            if (safeUrl.isNotEmpty() && safeUrl != lastScannedUrl) {
+                lastScannedUrl = safeUrl
+                DebugLog.add("🌐 URL: $safeUrl | type=${contentType ?: "other"}")
             }
 
             // COOLDOWN CHECK TRƯỚC TIÊN — không cho bypass dù đang có session làm việc
-            if (isBlocked && CooldownState.isInCooldown()) {
+            if ((isBlocked || isControlled) && CooldownState.isInCooldown()) {
                 val now = System.currentTimeMillis()
                 if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
                 if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
                 lastPopupTime = now
                 // Dừng session làm việc nếu có
                 if (TimerService.isRunningFor(BROWSER_PKG)) {
-                    DebugLog.add("🔒 Cooldown: stop work session, block entertain url=$url")
+                    DebugLog.add("🔒 Cooldown: stop work session, block entertain url=$safeUrl")
                     TimerService.stop(this)
                 } else {
-                    DebugLog.add("🔒 COOLDOWN BLOCK! url=$url (${CooldownState.remainingMinutes()}p còn)")
+                    DebugLog.add("🔒 COOLDOWN BLOCK! url=$safeUrl (${CooldownState.remainingMinutes()}p còn)")
                 }
                 handler.post { blockingOverlay.showCooldown(CooldownState.remainingMinutes()) }
                 return
             }
 
             if (TimerService.isRunningFor(BROWSER_PKG)) {
-                if (isBlocked) {
+                if (isBlocked || isControlled) {
                     val approvedDomain = TimerService.approvedDomain
                     if (approvedDomain.isNotEmpty()) {
                         DebugLog.add("✅ Blocked content allowed in session")
@@ -577,29 +583,43 @@ class AppWatcherService : AccessibilityService() {
                     if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
                     if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
                     lastPopupTime = now
-                    DebugLog.add("🚫 BLOCKED trong session! url=$url")
+                    DebugLog.add("🚫 BLOCKED trong session! url=$safeUrl")
                     TimerService.stop(this)
                     popupShownForPkg = ""
                     handler.post {
-                        blockingOverlay.show("⚠️ Nội dung bị chặn!", BROWSER_PKG, url)
+                        blockingOverlay.show("⚠️ Nội dung bị chặn!", BROWSER_PKG, safeUrl.ifEmpty { contentType ?: "controlled_content" })
                     }
                 }
                 return
             }
 
-            if (isBlocked) {
+            if (isBlocked || isControlled) {
                 val now = System.currentTimeMillis()
                 if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
                 if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
                 lastPopupTime = now
-                DebugLog.add("🚫 BLOCKED! url=$url")
+                DebugLog.add("🚫 BLOCKED! url=$safeUrl")
                 popupShownForPkg = ""
                 handler.post {
-                    blockingOverlay.show("⚠️ Nội dung bị chặn!", BROWSER_PKG, url)
+                    blockingOverlay.show("⚠️ Nội dung bị chặn!", BROWSER_PKG, safeUrl.ifEmpty { contentType ?: "controlled_content" })
                 }
             }
         } catch (e: Exception) {
             DebugLog.add("❌ Scan error: ${e.message}")
+        }
+    }
+
+    private fun detectBrowserContent(root: AccessibilityNodeInfo, url: String?): String? {
+        DataStore.classifyBrowserContent(url.orEmpty())?.let { return it }
+        val texts = mutableListOf<String>()
+        collectAllText(root, texts, 0)
+        val joined = texts.joinToString(" ").lowercase()
+        return when {
+            joined.contains("facebook") || joined.contains("reels") ||
+                joined.contains("bảng tin") || joined.contains("news feed") -> "facebook"
+            joined.contains("youtube") || joined.contains("shorts") -> "youtube"
+            blockedKeywords.any { joined.contains(it) } -> "entertain"
+            else -> null
         }
     }
 
@@ -661,10 +681,12 @@ class AppWatcherService : AccessibilityService() {
     }
 
     fun getLastScannedUrl(): String = lastScannedUrl
+    fun getLastBrowserContentType(): String? = lastBrowserContentType
 
     fun resetPopupState(keepUrl: String = "") {
         popupShownForPkg = ""
         lastScannedUrl = if (keepUrl.isNotEmpty()) keepUrl else ""
+        if (keepUrl.isEmpty()) lastBrowserContentType = null
         lastPopupTime = System.currentTimeMillis()
     }
 
