@@ -356,12 +356,12 @@ object DataStore {
         return (usage.accumulatedMs / 60000L).toInt()
     }
 
-    // ── Repeated Intention Tracking (rule: 3 lần liên tiếp cùng mục đích → cooldown 1h) ──
+    // ── Repeated Session Tracking (rule: 3 session liên tiếp cùng app/nội dung → cooldown 1h) ──
     // "key" giống hệt key ở trên (packageName hoặc "browser:<contentType>").
-    // Lưu: nội dung mục đích lần gần nhất + số lần lặp lại liên tiếp.
+    // Lưu số session liên tiếp cho cùng key. Nội dung mục đích chỉ giữ để tương thích dữ liệu cũ.
 
     private const val KEY_REPEAT_PREFIX = "repeat_intent_"
-    const val REPEAT_LIMIT = 3 // 3 lần liên tiếp giống nhau → lần thứ 3 trigger cooldown
+    const val REPEAT_LIMIT = 3 // session thứ 3 liên tiếp của cùng app/nội dung → cooldown
 
     private fun repeatKey(key: String) = KEY_REPEAT_PREFIX + key
     const val REPEAT_EXPIRY_MS = 6 * 3600_000L // quá 6 tiếng không lặp lại → coi như chuỗi cũ đã hết hạn
@@ -402,24 +402,20 @@ object DataStore {
     }
 
     /**
-     * Gọi khi 1 session cho [key] BẮT ĐẦU với [intention].
-     * Trả về số lần lặp lại liên tiếp SAU khi tính lần này (đã bao gồm lần hiện tại).
-     * Nếu mục đích khác lần trước, hoặc đã quá REPEAT_EXPIRY_MS kể từ lần trước → reset về 1.
-     * Nếu giống và còn trong hạn → tăng dần.
+     * Gọi khi một session mới cho [key] bắt đầu.
+     * Mỗi lần xác nhận sử dụng lại cùng app/loại nội dung đều tăng bộ đếm,
+     * không phụ thuộc người dùng nhập mục đích giống hay khác lần trước.
+     * Nếu quá [REPEAT_EXPIRY_MS] không có session mới thì bắt đầu lại từ 1.
      */
     fun registerIntentionAttempt(
         context: Context, key: String, intention: String,
         nowMs: Long = System.currentTimeMillis()
     ): Int {
         val normalized = normalizeIntention(intention)
-        if (normalized.isEmpty()) {
-            clearRepeatState(context, key)
-            return 0
-        }
         val existing = getRepeatState(context, key)
         val hasPriorState = existing.count > 0
         val expired = hasPriorState && nowMs - existing.lastAttemptMs > REPEAT_EXPIRY_MS
-        val newCount = if (!expired && existing.lastIntention == normalized) existing.count + 1 else 1
+        val newCount = if (hasPriorState && !expired) existing.count + 1 else 1
         saveRepeatState(context, key, RepeatState(normalized, newCount, nowMs))
         return newCount
     }
