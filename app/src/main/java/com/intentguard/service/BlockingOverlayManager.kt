@@ -163,11 +163,13 @@ class BlockingOverlayManager(private val context: Context) {
             }
             val domain = if (blockedUrl != null) extractDomain(blockedUrl) else ""
 
-            // Rule: 3 lần liên tiếp cùng mục đích (cùng app, hoặc cùng loại nội dung web
-            // facebook/youtube/giải trí) → cooldown 1h. Web khác (không thuộc nhóm này) bỏ qua rule.
+            // Rule: session thứ 3 liên tiếp của cùng app, hoặc cùng loại nội dung web
+            // facebook/youtube/giải trí → cooldown 1h, bất kể mục đích nhập có thay đổi.
             val trackingKey = if (pkg == AppWatcherService.BROWSER_PKG) {
                 val currentUrl = blockedUrl ?: AppWatcherService.instance?.getLastScannedUrl() ?: ""
-                DataStore.classifyBrowserContent(currentUrl)?.let { "browser:$it" }
+                val type = AppWatcherService.instance?.getLastBrowserContentType()
+                    ?: DataStore.classifyBrowserContent(currentUrl)
+                type?.let { "browser:$it" }
             } else pkg
             val blocked = trackingKey != null && (AppWatcherService.instance
                 ?.checkRepeatedIntentionAndMaybeBlock(trackingKey, intention, pkg) ?: false)
