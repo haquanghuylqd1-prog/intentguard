@@ -183,14 +183,14 @@ class AppWatcherService : AccessibilityService() {
         return false
     }
 
-    // ── Repeated-intention guard (rule: 3 lần liên tiếp cùng mục đích → cooldown 1h) ──
-    // Gọi khi 1 session MỚI bắt đầu (từ TimerService.startFor caller) với [intention] đã nhập.
-    // Nếu đây là lần lặp thứ REPEAT_LIMIT trở lên (cùng nội dung, liên tiếp) → cooldown ngay,
+    // ── Repeated-session guard (rule: 3 session liên tiếp cùng app/nội dung → cooldown 1h) ──
+    // Gọi khi một session MỚI bắt đầu. Mục đích có thể khác nhau; cùng trackingKey vẫn được đếm.
+    // Nếu đây là session thứ REPEAT_LIMIT liên tiếp trở lên → cooldown ngay,
     // không cho session này tiếp tục chạy.
     fun checkRepeatedIntentionAndMaybeBlock(trackingKey: String, intention: String, pkgForCooldown: String): Boolean {
         val count = DataStore.registerIntentionAttempt(this, trackingKey, intention)
         if (count >= DataStore.REPEAT_LIMIT) {
-            DebugLog.add("🔒 Mục đích lặp lại $count lần liên tiếp ($trackingKey) → COOLDOWN 1h!")
+            DebugLog.add("🔒 Đã mở $count session liên tiếp ($trackingKey) → COOLDOWN 1h!")
             DataStore.clearRepeatState(this, trackingKey)
             DataStore.clearContinuousUsage(this, trackingKey)
             if (TimerService.isRunningFor(pkgForCooldown)) TimerService.stop(this)
