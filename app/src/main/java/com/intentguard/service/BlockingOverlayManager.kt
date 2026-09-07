@@ -25,6 +25,11 @@ class BlockingOverlayManager(private val context: Context) {
     private var overlayView: android.view.View? = null
     private var selectedMinutes = 20
 
+    var isSessionEndedShowing: Boolean = false
+        private set
+
+    val isShowing: Boolean get() = overlayView != null
+
     // Params cho popup nhập intention — cho phép touch modal (cần nhập text)
     private val overlayParams get() = WindowManager.LayoutParams(
         WindowManager.LayoutParams.MATCH_PARENT,
@@ -58,9 +63,18 @@ class BlockingOverlayManager(private val context: Context) {
             WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
     }
 
-    // Hiện popup nhập mục đích + thời gian (lần đầu vào browser hoặc bị chặn)
+    // Hiện popup nhập mục đích + thời gian (khi mở app hoặc bị chặn)
     fun show(appName: String, pkg: String, blockedUrl: String?) {
-        if (overlayView != null) return
+        if (overlayView != null) {
+            // Nếu session ended overlay đang hiện, đóng nó đi để mở popup control
+            if (isSessionEndedShowing) {
+                dismiss()
+            } else {
+                return
+            }
+        }
+
+        isSessionEndedShowing = false
 
         val inflater = LayoutInflater.from(context)
         val view = inflater.inflate(R.layout.activity_intention_popup, null)
@@ -155,6 +169,17 @@ class BlockingOverlayManager(private val context: Context) {
                 etIntention.error = "Nhập mục đích đi bro!"
                 return@setOnClickListener
             }
+
+            // Nếu đang trong cooldown mà người dùng chọn Giải trí -> báo lỗi
+            if (CooldownState.isInCooldownFor(pkg) && isEntertain) {
+                Toast.makeText(
+                    context,
+                    "Đang trong giờ nghỉ giải trí (${CooldownState.remainingMinutes()}p còn lại)! Chọn 💼 Làm việc đi bro!",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@setOnClickListener
+            }
+
             // Prefix theo loại session để DataStore phân biệt được
             val intentionText = when {
                 blockedUrl != null -> "⚠️ $intention"
@@ -203,7 +228,15 @@ class BlockingOverlayManager(private val context: Context) {
 
     // Hiện overlay cooldown: block 1 giờ, có nút "Chuyển sang web khác"
     fun showCooldown(remainingMinutes: Int) {
-        if (overlayView != null) return
+        if (overlayView != null) {
+            if (isSessionEndedShowing) {
+                dismiss()
+            } else {
+                return
+            }
+        }
+
+        isSessionEndedShowing = false
 
         val inflater = LayoutInflater.from(context)
         val view = inflater.inflate(R.layout.overlay_cooldown, null)
@@ -221,21 +254,15 @@ class BlockingOverlayManager(private val context: Context) {
                 return@setOnClickListener
             }
 
-            // Format URL đúng
             val fullUrl = if (rawUrl.startsWith("http")) rawUrl else "https://$rawUrl"
             val domain = extractDomain(rawUrl)
 
             DebugLog.add("🔄 Chuyển sang URL: $fullUrl (domain=$domain)")
 
-            // Approve domain này trong cooldown để scanner không block
             CooldownState.approveUrl(domain)
-
-            // Reset scanner state — giữ URL hiện tại để không re-trigger cooldown
             AppWatcherService.instance?.resetPopupState(keepUrl = domain)
-
             dismiss()
 
-            // Mở URL trong Samsung Internet
             val browserIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(fullUrl)).apply {
                 setPackage("com.sec.android.app.sbrowser")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -244,7 +271,6 @@ class BlockingOverlayManager(private val context: Context) {
                 context.startActivity(browserIntent)
                 DebugLog.add("✅ Opened $fullUrl in Samsung Internet")
             } catch (e: Exception) {
-                // Fallback: mở bất kỳ browser nào
                 context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(fullUrl)).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 })
@@ -261,13 +287,15 @@ class BlockingOverlayManager(private val context: Context) {
             })
         }
 
-        // Nút dùng app hiện tại để làm việc (cho FB/YT)
+        // Nút dùng app hiện tại để làm việc (cho FB/YT/Browser)
         view.findViewById<Button>(R.id.btnUseForWork).setOnClickListener {
-            // Reset cooldown state để scanner không block
-            AppWatcherService.instance?.resetPopupState()
             dismiss()
-            // Show popup nhập mục đích làm việc bình thường
-            // AppWatcherService sẽ tự detect và show popup vì popupShownForPkg đã reset
+            AppWatcherService.instance?.let { service ->
+                service.resetPopupState()
+                val pkg = CooldownState.cooldownPkg.ifEmpty { service.getLastForegroundPkg() }
+                val appName = DataStore.getAppName(context, pkg)
+                service.showIntentionPopup(pkg, appName)
+            }
             DebugLog.add("💼 User chọn dùng app để làm việc trong cooldown")
         }
 
@@ -276,7 +304,6 @@ class BlockingOverlayManager(private val context: Context) {
         try {
             windowManager.addView(view, cooldownParams)
             DebugLog.add("🔒 Cooldown overlay shown ($remainingMinutes p)")
-            // Request focus để bàn phím hoạt động khi tap vào EditText
             Handler(Looper.getMainLooper()).postDelayed({
                 etUrl.setOnClickListener {
                     etUrl.requestFocus()
@@ -295,6 +322,7 @@ class BlockingOverlayManager(private val context: Context) {
     fun showSessionEnded(appName: String, plannedMinutes: Int, actualMinutes: Int,
                          intention: String, isEntertain: Boolean) {
         dismiss()
+        isSessionEndedShowing = true
         val ctx = context
 
         val inner = LinearLayout(ctx).apply {
@@ -402,19 +430,19 @@ class BlockingOverlayManager(private val context: Context) {
         } catch (e: Exception) {
             DebugLog.add("❌ SessionEnded overlay error: ${e.message}")
             overlayView = null
+            isSessionEndedShowing = false
         }
     }
 
     private fun dpToPx(dp: Int) = (dp * context.resources.displayMetrics.density).toInt()
 
     fun dismiss() {
+        isSessionEndedShowing = false
         overlayView?.let {
             try { windowManager.removeView(it) } catch (_: Exception) {}
             overlayView = null
         }
     }
-
-    val isShowing get() = overlayView != null
 
     private fun extractDomain(url: String): String {
         return url.lowercase()

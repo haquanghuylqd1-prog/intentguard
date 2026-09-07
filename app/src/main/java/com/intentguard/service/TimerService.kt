@@ -18,7 +18,6 @@ import com.intentguard.R
 import com.intentguard.data.DataStore
 import com.intentguard.data.FirebaseSync
 import com.intentguard.data.Session
-import com.intentguard.service.DebugLog
 import com.intentguard.ui.MainActivity
 import kotlinx.coroutines.*
 import java.util.UUID
@@ -162,19 +161,19 @@ class TimerService : Service() {
         currentIntention = ""
         removeOverlay()
 
-        // Nếu là session giải trí → bắt đầu cooldown 1 giờ cho đúng pkg đó
         val isEntertain = DataStore.isEntertainSession(session)
+
+        // Nếu là session giải trí → bắt đầu cooldown 1 giờ cho đúng pkg đó
         if (isEntertain) {
             CooldownState.startCooldown(1, pkg)
         }
 
         AppWatcherService.instance?.resetPopupState()
 
-        // Hiện overlay "hết giờ" đè lên app hiện tại
-        val overlay = AppWatcherService.instance?.let {
-            BlockingOverlayManager(this)
-        }
-        overlay?.showSessionEnded(appName, plannedMinutes, actualMinutes, intention, isEntertain)
+        // Hiện overlay "hết giờ" thông qua AppWatcherService persistent instance
+        AppWatcherService.instance?.showSessionEnded(
+            appName, plannedMinutes, actualMinutes, intention, isEntertain
+        )
 
         stopSelf()
     }
@@ -193,7 +192,9 @@ class TimerService : Service() {
                 ))
             }
         }
-        currentPackage = ""; currentSessionId = ""; currentIntention = ""
+        currentPackage = ""
+        currentSessionId = ""
+        currentIntention = ""
         removeOverlay()
         AppWatcherService.instance?.resetPopupState()
         stopForeground(STOP_FOREGROUND_REMOVE)

@@ -9,7 +9,6 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
 import com.intentguard.data.DataStore
-import com.intentguard.ui.IntentionPopupActivity
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -32,11 +31,23 @@ object CooldownState {
 
     fun isInCooldown() = System.currentTimeMillis() < blockedUntilMs
 
+    fun isInCooldownFor(pkg: String): Boolean {
+        if (!isInCooldown()) return false
+        return cooldownPkg.isEmpty() || cooldownPkg == pkg
+    }
+
     fun startCooldown(hours: Int = 1, pkg: String = "") {
         blockedUntilMs = System.currentTimeMillis() + hours * 3600_000L
         approvedUrl = ""
         cooldownPkg = pkg
-        DebugLog.add("🔒 Cooldown bắt đầu - block ${hours}h")
+        DebugLog.add("🔒 Cooldown bắt đầu - block ${hours}h cho $pkg")
+    }
+
+    fun clearCooldown() {
+        blockedUntilMs = 0L
+        approvedUrl = ""
+        cooldownPkg = ""
+        DebugLog.add("🔓 Cooldown đã được xoá")
     }
 
     fun approveUrl(url: String) {
@@ -54,7 +65,7 @@ class AppWatcherService : AccessibilityService() {
     private var lastPopupTime = 0L
     private var lastScannedUrl = ""
     private var lastBrowserContentType: String? = null
-    private val POPUP_COOLDOWN_MS = 2000L
+    private val POPUP_COOLDOWN_MS = 1500L
     private var lastEntertainDetectTime = 0L
     private val ENTERTAIN_DETECT_COOLDOWN_MS = 5000L
 
@@ -62,15 +73,32 @@ class AppWatcherService : AccessibilityService() {
     private var lastReelSignature = ""
     private var lastReelCountTime = 0L
 
-    private lateinit var blockingOverlay: BlockingOverlayManager
+    lateinit var blockingOverlay: BlockingOverlayManager
     private val handler = Handler(Looper.getMainLooper())
 
-    private val urlScanRunnable = object : Runnable {
+    // Watchdog định kỳ chạy mỗi 500ms:
+    // 1. Nếu app đang xem là watched app mà CHƯA có TimerService chạy và overlay chưa hiện -> hiện popup control ngay
+    // 2. Nếu đang xem browser trong session -> quét URL và track continuous usage
+    private val periodicWatchdogRunnable = object : Runnable {
         override fun run() {
-            if (lastForegroundPkg == BROWSER_PKG) {
-                scanBrowserUrl()
-                ensureBrowserOverlayShowing()
-                trackBrowserContinuousUsage()
+            val pkg = lastForegroundPkg
+            if (pkg.isNotEmpty() && DataStore.isWatchedApp(this@AppWatcherService, pkg)) {
+                if (!TimerService.isRunningFor(pkg)) {
+                    // Không có session chạy -> bắt buộc phải hiển thị overlay control hoặc cooldown
+                    // Cho phép chạy khi: overlay chưa hiện, HOẶC overlay session-ended còn sót
+                    // (session-ended sẽ bị dismiss và thay bằng control popup)
+                    if (!::blockingOverlay.isInitialized ||
+                        !blockingOverlay.isShowing ||
+                        blockingOverlay.isSessionEndedShowing) {
+                        checkAndShowOverlayForWatchedApp(pkg)
+                    }
+                } else {
+                    // Đang trong session hợp lệ: nếu là browser thì scan URL và track liên tục
+                    if (pkg == BROWSER_PKG) {
+                        scanBrowserUrl()
+                        trackBrowserContinuousUsage()
+                    }
+                }
             }
             handler.postDelayed(this, 500)
         }
@@ -88,7 +116,6 @@ class AppWatcherService : AccessibilityService() {
         override fun run() {
             val pkg = lastForegroundPkg
             // Scan FB/YT/Shopee mọi lúc — KỂ CẢ đang trong session 💼 làm việc
-            // (logic skip khi đang trong session 🎮 hợp lệ nằm bên trong)
             if (pkg in SOCIAL_PKGS) {
                 // Track thời gian dùng liên tục cho app này — >20p liên tục thì tự cooldown,
                 // bất kể có đang trong 1 session hợp lệ hay không.
@@ -97,24 +124,6 @@ class AppWatcherService : AccessibilityService() {
                 }
             }
             handler.postDelayed(this, 2000)
-        }
-    }
-
-    private var browserDetectRetryCount = 0
-    private val browserDetectRunnable = object : Runnable {
-        override fun run() {
-            if (lastForegroundPkg != BROWSER_PKG) return
-            if (TimerService.isRunningFor(BROWSER_PKG)) return
-            browserDetectRetryCount++
-            val root = try { rootInActiveWindow } catch (e: Exception) { null }
-            if (root != null) {
-                root.recycle()
-                triggerBrowserPopup()
-            } else if (browserDetectRetryCount < 10) {
-                handler.postDelayed(this, 400)
-            } else {
-                triggerBrowserPopup()
-            }
         }
     }
 
@@ -129,6 +138,7 @@ class AppWatcherService : AccessibilityService() {
     companion object {
         var instance: AppWatcherService? = null
         const val BROWSER_PKG = "com.sec.android.app.sbrowser"
+        const val CHROME_PKG = "com.android.chrome"
         const val SHOPEE_PKG = "com.shopee.vn"
         val SOCIAL_PKGS = setOf(
             "com.facebook.katana",
@@ -158,15 +168,12 @@ class AppWatcherService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         blockingOverlay = BlockingOverlayManager(this)
-        handler.postDelayed(urlScanRunnable, 1000)
+        handler.postDelayed(periodicWatchdogRunnable, 500)
         handler.postDelayed(appContentScanRunnable, 2000)
         DebugLog.add("✅ Service connected")
     }
 
     // ── Continuous-usage guard (rule: >20 phút liên tục 1 loại nội dung → cooldown 1h) ──
-    // [trackingKey]: packageName cho app riêng (FB/YT/Shopee), hoặc "browser:<contentType>" cho web.
-    // Gọi định kỳ mỗi lần scan xác nhận vẫn đang xem đúng nội dung đó.
-    // Trả về true nếu VỪA trigger cooldown (caller nên dừng xử lý tiếp sau khi gọi).
     private fun trackContinuousAndMaybeBlock(trackingKey: String, pkgForCooldown: String): Boolean {
         if (CooldownState.isInCooldown()) return false
         val minutes = DataStore.updateContinuousUsage(this, trackingKey)
@@ -184,9 +191,6 @@ class AppWatcherService : AccessibilityService() {
     }
 
     // ── Repeated-session guard (rule: 3 session liên tiếp cùng app/nội dung → cooldown 1h) ──
-    // Gọi khi một session MỚI bắt đầu. Mục đích có thể khác nhau; cùng trackingKey vẫn được đếm.
-    // Nếu đây là session thứ REPEAT_LIMIT liên tiếp trở lên → cooldown ngay,
-    // không cho session này tiếp tục chạy.
     fun checkRepeatedIntentionAndMaybeBlock(trackingKey: String, intention: String, pkgForCooldown: String): Boolean {
         val count = DataStore.registerIntentionAttempt(this, trackingKey, intention)
         if (count >= DataStore.REPEAT_LIMIT) {
@@ -206,23 +210,24 @@ class AppWatcherService : AccessibilityService() {
         event ?: return
         val pkg = event.packageName?.toString() ?: return
         if (pkg == packageName || pkg == "com.android.systemui") return
-        // Dùng InputMethodManager để filter keyboard — không dismiss overlay khi gõ
+        // Không dismiss overlay khi đang gõ phím
         if (isInputMethodPackage(pkg)) return
 
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                // Khi về home → reset lastForegroundPkg để lần sau vào browser trigger lại
+                // Khi về home launcher -> reset state để lần sau mở lại app sẽ trigger popup ngay
                 if (pkg.contains("launcher", ignoreCase = true) ||
-                    pkg == "com.samsung.android.app.resolver") {
+                    pkg == "com.samsung.android.app.resolver" ||
+                    pkg == "com.sec.android.app.launcher") {
                     lastForegroundPkg = ""
+                    popupShownForPkg = ""
+                    // Nếu đang hiện intention popup của app trước mà user bấm home -> dismiss
+                    if (::blockingOverlay.isInitialized && blockingOverlay.isShowing && !blockingOverlay.isSessionEndedShowing) {
+                        blockingOverlay.dismiss()
+                    }
+                    return
                 }
-                // Luôn update lastForegroundPkg cho browser và reset URL khi tab switch
-                if (pkg == BROWSER_PKG) {
-                    lastForegroundPkg = BROWSER_PKG
-                    lastScannedUrl = ""
-                    handler.postDelayed({ scanBrowserUrl() }, 300)
-                    handler.postDelayed({ scanBrowserUrl() }, 800)
-                }
+
                 handleForegroundChange(pkg)
             }
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
@@ -232,12 +237,13 @@ class AppWatcherService : AccessibilityService() {
                     if (focusedPkg != null &&
                         focusedPkg != packageName &&
                         focusedPkg != "com.android.systemui" &&
-                        !isInputMethodPackage(focusedPkg) &&
-                        focusedPkg != lastForegroundPkg) {
-                        handleForegroundChange(focusedPkg)
-                        if (focusedPkg == BROWSER_PKG) {
-                            lastScannedUrl = ""
-                            handler.postDelayed({ scanBrowserUrl() }, 400)
+                        !isInputMethodPackage(focusedPkg)) {
+                        // Nếu focusedPkg đổi HOẶC là watched app mà không có timer chạy và chưa hiện overlay
+                        val isWatched = DataStore.isWatchedApp(this, focusedPkg)
+                        val needsOverlay = isWatched && !TimerService.isRunningFor(focusedPkg) &&
+                                (!::blockingOverlay.isInitialized || !blockingOverlay.isShowing)
+                        if (focusedPkg != lastForegroundPkg || needsOverlay) {
+                            handleForegroundChange(focusedPkg)
                         }
                     }
                 } catch (_: Exception) {}
@@ -257,7 +263,6 @@ class AppWatcherService : AccessibilityService() {
         }
 
         // ── YouTube: detect Shorts KỂ CẢ trong session 💼 làm việc ──
-        // Chỉ skip khi đang trong session giải trí hợp lệ (🎮 hoặc ⚠️)
         val currentSession = TimerService.currentIntention
         if (TimerService.isRunningFor(pkg) && !currentSession.startsWith("💼")) return
 
@@ -287,8 +292,8 @@ class AppWatcherService : AccessibilityService() {
         val allTexts = mutableListOf<String>()
         collectAllText(root, allTexts, 0)
         val text = allTexts.joinToString(" ").lowercase()
-        return when (pkg) {
-            "com.facebook.katana", "com.facebook.lite" -> {
+        return when {
+            pkg == "com.facebook.katana" || pkg == "com.facebook.lite" -> {
                 val hasReels = text.contains("reels") || text.contains("reel")
                 val hasPattern = (text.contains("âm thanh gốc") || text.contains("original audio")) &&
                     text.contains("theo dõi")
@@ -296,7 +301,7 @@ class AppWatcherService : AccessibilityService() {
                 if (hasPattern) DebugLog.add("🎯 FB Reels pattern detected")
                 hasReels || hasPattern
             }
-            "com.google.android.youtube" -> {
+            pkg == "com.google.android.youtube" -> {
                 val hasShorts = text.contains("shorts")
                 if (hasShorts) DebugLog.add("🎯 YT Shorts detected")
                 hasShorts
@@ -305,11 +310,7 @@ class AppWatcherService : AccessibilityService() {
         }
     }
 
-    // ── FB Reels: popup khoá 🎮 ngay khi detect (kể cả session 💼),
-    //    đếm 3 reels free → reel thứ 4 = cooldown 1h ──────────────────────────
-
     private fun scanFacebookReels(pkg: String) {
-        // Đang hiện overlay (popup/cooldown) → không đếm reels phía sau
         if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
         try {
             val root = rootInActiveWindow ?: return
@@ -323,14 +324,12 @@ class AppWatcherService : AccessibilityService() {
                     joined.contains("theo dõi"))
             if (!isReel) return
 
-            // Cooldown đã hết mà count còn > limit → chu kỳ mới, reset về 0
             if (DataStore.getReelsCount(this) > REELS_LIMIT) {
                 DataStore.setReelsCount(this, 0)
                 lastReelSignature = ""
                 DebugLog.add("🔄 Reels counter reset (cooldown đã hết)")
             }
 
-            // ── Bước 1: Đếm reel mới (chống đếm trùng + chống lướt quá nhanh) ──
             var count = DataStore.getReelsCount(this)
             var justCounted = false
             val signature = buildReelSignature(texts)
@@ -346,7 +345,6 @@ class AppWatcherService : AccessibilityService() {
                 }
             }
 
-            // ── Bước 2: Reel thứ 4 → khoá Facebook 1h ──
             if (count > REELS_LIMIT) {
                 if (justCounted) {
                     DebugLog.add("🔒 Reel thứ $count → COOLDOWN 1h, khoá Facebook!")
@@ -360,8 +358,6 @@ class AppWatcherService : AccessibilityService() {
                 return
             }
 
-            // ── Bước 3: Chưa có session giải trí hợp lệ → popup khoá 🎮 NGAY
-            //    (kể cả đang trong session 💼 làm việc — dừng session đó luôn) ──
             val inEntertainSession = TimerService.isRunningFor(pkg) &&
                 (TimerService.currentIntention.startsWith("🎮") ||
                     TimerService.currentIntention.startsWith("⚠️"))
@@ -384,7 +380,6 @@ class AppWatcherService : AccessibilityService() {
                 return
             }
 
-            // ── Bước 4: Đang trong session giải trí → toast đếm ──
             if (justCounted) {
                 handler.post {
                     Toast.makeText(
@@ -399,8 +394,6 @@ class AppWatcherService : AccessibilityService() {
         }
     }
 
-    // Tạo "chữ ký" của reel hiện tại từ text trên màn hình
-    // (tên tác giả, caption...) — lọc bỏ số like/view và chữ chung chung
     private val reelGenericWords = setOf(
         "reels", "reel", "theo dõi", "đang theo dõi", "thích", "bình luận",
         "chia sẻ", "gửi", "âm thanh gốc", "original audio", "follow",
@@ -412,13 +405,12 @@ class AppWatcherService : AccessibilityService() {
             .map { it.trim() }
             .filter { it.length in 6..120 }
             .filter { t -> t.lowercase() !in reelGenericWords }
-            .filter { !it.matches(Regex("^[\\d.,kKmMtr\\s]+$")) } // bỏ số like/view
+            .filter { !it.matches(Regex("^[\\d.,kKmMtr\\s]+$")) }
             .distinct()
             .take(6)
             .joinToString("|")
     }
 
-    // 2 chữ ký trùng >40% dòng → vẫn là reel cũ (like count đổi, mở comment...)
     private fun isSameReel(a: String, b: String): Boolean {
         if (b.isEmpty()) return false
         if (a == b) return true
@@ -440,102 +432,81 @@ class AppWatcherService : AccessibilityService() {
         }
     }
 
-    // ── Foreground & Browser Logic ────────────────────────────────────────────
+    // ── Foreground & Control Logic ────────────────────────────────────────────
 
-    private fun handleForegroundChange(pkg: String) {
-        // Dismiss overlay chỉ khi chuyển sang watched app khác (không phải keyboard)
-        val isWatchedOther = pkg != BROWSER_PKG && DataStore.isWatchedApp(this, pkg)
-        if (isWatchedOther && ::blockingOverlay.isInitialized && blockingOverlay.isShowing) {
-            blockingOverlay.dismiss()
+    fun handleForegroundChange(pkg: String) {
+        val isWatched = DataStore.isWatchedApp(this, pkg)
+
+        // Dismiss intention overlay nếu người dùng chuyển hẳn sang app khác không bị theo dõi
+        if (!isWatched && !isInputMethodPackage(pkg) && pkg != packageName) {
+            if (::blockingOverlay.isInitialized && blockingOverlay.isShowing && !blockingOverlay.isSessionEndedShowing) {
+                blockingOverlay.dismiss()
+            }
         }
-        if (pkg == lastForegroundPkg) return
-        lastForegroundPkg = pkg
-        DebugLog.add("📱 Foreground: $pkg")
 
-        if (!DataStore.isWatchedApp(this, pkg)) return
+        val pkgChanged = (pkg != lastForegroundPkg)
+        lastForegroundPkg = pkg
+
+        if (pkgChanged) {
+            DebugLog.add("📱 Foreground: $pkg")
+        }
+
+        if (!isWatched) return
         DataStore.checkAndRotateWeek(this)
 
+        // Nếu là browser -> quét URL
         if (pkg == BROWSER_PKG) {
-            onBrowserForegrounded()
-        } else {
-            // Cooldown → block tất cả social apps
-            if (CooldownState.isInCooldown()) {
-                val now = System.currentTimeMillis()
-                if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
-                if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
-                lastPopupTime = now
-                DebugLog.add("🔒 Cooldown block for $pkg (${CooldownState.remainingMinutes()}p)")
-                handler.post { blockingOverlay.showCooldown(CooldownState.remainingMinutes()) }
-                return
-            }
-            if (popupShownForPkg == pkg && TimerService.isRunningFor(pkg)) return
-            popupShownForPkg = pkg
-            showActivityPopup(pkg, DataStore.getAppName(this, pkg))
-        }
-    }
-
-    private fun ensureBrowserOverlayShowing() {
-        if (TimerService.isRunningFor(BROWSER_PKG)) return
-        if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
-
-        if (CooldownState.isInCooldown()) {
-            val currentUrl = lastScannedUrl
-            val controlledContent = lastBrowserContentType ?: DataStore.classifyBrowserContent(currentUrl)
-            if (currentUrl.isEmpty() && controlledContent == null) return
-            if (isBlockedUrl(currentUrl) || controlledContent != null) return // nội dung bị quản lý → scanner xử lý cooldown
-            // URL công việc bình thường trong cooldown → show popup nhập mục đích làm việc mới
-            if (TimerService.isRunningFor(BROWSER_PKG)) return
-            val now = System.currentTimeMillis()
-            if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
-            lastPopupTime = now
-            popupShownForPkg = BROWSER_PKG
-            DebugLog.add("✅ Work URL in cooldown → show work popup")
-            handler.post {
-                blockingOverlay.show(DataStore.getAppName(this, BROWSER_PKG), BROWSER_PKG, null)
-            }
-            return
-        }
-
-        val now = System.currentTimeMillis()
-        if (now - lastPopupTime < 1000L) return
-        lastPopupTime = now
-        popupShownForPkg = BROWSER_PKG
-        triggerBrowserPopup()
-    }
-
-    private fun onBrowserForegrounded() {
-        if (TimerService.isRunningFor(BROWSER_PKG)) return
-        if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
-
-        if (CooldownState.isInCooldown()) {
             lastScannedUrl = ""
-            lastPopupTime = 0L
-            DebugLog.add("🔒 Cooldown active - reset state")
             handler.postDelayed({ scanBrowserUrl() }, 300)
             handler.postDelayed({ scanBrowserUrl() }, 800)
+        }
+
+        // Nếu app đang trong session hợp lệ (timer đang chạy) -> KHÔNG chặn
+        if (TimerService.isRunningFor(pkg)) {
             return
         }
 
-        val now = System.currentTimeMillis()
-        if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
-        lastPopupTime = now
-        popupShownForPkg = BROWSER_PKG
-        browserDetectRetryCount = 0
-        handler.removeCallbacks(browserDetectRunnable)
-        handler.postDelayed(browserDetectRunnable, 200)
+        // Nếu app đang theo dõi và KHÔNG có timer chạy -> BẮT BUỘC hiển thị màn hình control
+        checkAndShowOverlayForWatchedApp(pkg)
     }
 
-    private fun triggerBrowserPopup() {
-        if (TimerService.isRunningFor(BROWSER_PKG)) return
-        if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
-        if (CooldownState.isInCooldown()) return
+    /**
+     * Kiểm tra và hiển thị overlay chặn cho watched app khi chưa có session hoạt động.
+     * Áp dụng thống nhất cho TẤT CẢ các app được theo dõi (Samsung Internet, Chrome, Facebook, YouTube...).
+     */
+    fun checkAndShowOverlayForWatchedApp(pkg: String) {
+        if (!DataStore.isWatchedApp(this, pkg)) return
+        if (TimerService.isRunningFor(pkg)) return
+        // Cho phép tiếp tục nếu session-ended overlay còn sót (sẽ bị dismiss bên trong show/showCooldown)
+        if (::blockingOverlay.isInitialized && blockingOverlay.isShowing && !blockingOverlay.isSessionEndedShowing) return
+
+        val appName = DataStore.getAppName(this, pkg)
+
+        // 1. Kiểm tra Cooldown: nếu app này đang trong cooldown thì hiển thị màn hình Cooldown
+        if (CooldownState.isInCooldownFor(pkg)) {
+            val now = System.currentTimeMillis()
+            if (now - lastPopupTime < POPUP_COOLDOWN_MS && popupShownForPkg == pkg) return
+            lastPopupTime = now
+            popupShownForPkg = pkg
+            DebugLog.add("🔒 Cooldown block cho $pkg (${CooldownState.remainingMinutes()}p còn)")
+            handler.post {
+                blockingOverlay.showCooldown(CooldownState.remainingMinutes())
+            }
+            return
+        }
+
+        // 2. Không trong Cooldown: Hiển thị màn hình Control để nhập mục đích và thời gian
+        val now = System.currentTimeMillis()
+        if (now - lastPopupTime < POPUP_COOLDOWN_MS && popupShownForPkg == pkg) return
+        lastPopupTime = now
+        popupShownForPkg = pkg
+        DebugLog.add("🛑 Hiện màn hình control cho $pkg ($appName)")
         handler.post {
-            DebugLog.add("✅ Showing browser popup")
-            blockingOverlay.show(DataStore.getAppName(this, BROWSER_PKG), BROWSER_PKG, null)
+            blockingOverlay.show(appName, pkg, null)
         }
     }
 
-    // ── URL Scanner ───────────────────────────────────────────────────────────
+    // ── URL Scanner (cho Samsung Internet) ────────────────────────────────────
 
     private fun scanBrowserUrl() {
         try {
@@ -555,23 +526,21 @@ class AppWatcherService : AccessibilityService() {
                 DebugLog.add("🌐 URL: $safeUrl | type=${contentType ?: "other"}")
             }
 
-            // COOLDOWN CHECK TRƯỚC TIÊN — không cho bypass dù đang có session làm việc
+            // Cooldown check trong khi duyệt web
             if ((isBlocked || isControlled) && CooldownState.isInCooldown()) {
                 val now = System.currentTimeMillis()
                 if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
                 if (::blockingOverlay.isInitialized && blockingOverlay.isShowing) return
                 lastPopupTime = now
-                // Dừng session làm việc nếu có
                 if (TimerService.isRunningFor(BROWSER_PKG)) {
-                    DebugLog.add("🔒 Cooldown: stop work session, block entertain url=$safeUrl")
+                    DebugLog.add("🔒 Cooldown: stop session, block entertain url=$safeUrl")
                     TimerService.stop(this)
-                } else {
-                    DebugLog.add("🔒 COOLDOWN BLOCK! url=$safeUrl (${CooldownState.remainingMinutes()}p còn)")
                 }
                 handler.post { blockingOverlay.showCooldown(CooldownState.remainingMinutes()) }
                 return
             }
 
+            // Nếu đang trong session
             if (TimerService.isRunningFor(BROWSER_PKG)) {
                 if (isBlocked || isControlled) {
                     val approvedDomain = TimerService.approvedDomain
@@ -593,6 +562,7 @@ class AppWatcherService : AccessibilityService() {
                 return
             }
 
+            // Không có session nào đang chạy -> nếu gặp blocked/controlled content thì show popup cảnh báo
             if (isBlocked || isControlled) {
                 val now = System.currentTimeMillis()
                 if (now - lastPopupTime < POPUP_COOLDOWN_MS) return
@@ -666,20 +636,7 @@ class AppWatcherService : AccessibilityService() {
         return null
     }
 
-    private fun showActivityPopup(pkg: String, appName: String) {
-        startActivity(Intent(this, IntentionPopupActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            putExtra(IntentionPopupActivity.EXTRA_PACKAGE, pkg)
-            putExtra(IntentionPopupActivity.EXTRA_APP_NAME, appName)
-        })
-    }
-
-    private fun extractDomain(url: String): String {
-        return url.lowercase()
-            .removePrefix("https://").removePrefix("http://")
-            .removePrefix("www.").split("/")[0].split("?")[0]
-    }
-
+    fun getLastForegroundPkg(): String = lastForegroundPkg
     fun getLastScannedUrl(): String = lastScannedUrl
     fun getLastBrowserContentType(): String? = lastBrowserContentType
 
@@ -687,16 +644,32 @@ class AppWatcherService : AccessibilityService() {
         popupShownForPkg = ""
         lastScannedUrl = if (keepUrl.isNotEmpty()) keepUrl else ""
         if (keepUrl.isEmpty()) lastBrowserContentType = null
-        lastPopupTime = System.currentTimeMillis()
+        // Đặt lastPopupTime về 0 để sự kiện foreground kế tiếp được xử lý ngay lập tức
+        lastPopupTime = 0L
+    }
+
+    fun showSessionEnded(appName: String, plannedMinutes: Int, actualMinutes: Int, intention: String, isEntertain: Boolean) {
+        handler.post {
+            if (::blockingOverlay.isInitialized) {
+                blockingOverlay.showSessionEnded(appName, plannedMinutes, actualMinutes, intention, isEntertain)
+            }
+        }
+    }
+
+    fun showIntentionPopup(pkg: String, appName: String, blockedUrl: String? = null) {
+        handler.post {
+            if (::blockingOverlay.isInitialized) {
+                blockingOverlay.show(appName, pkg, blockedUrl)
+            }
+        }
     }
 
     override fun onInterrupt() {}
 
     override fun onDestroy() {
         super.onDestroy()
-        handler.removeCallbacks(urlScanRunnable)
+        handler.removeCallbacks(periodicWatchdogRunnable)
         handler.removeCallbacks(appContentScanRunnable)
-        handler.removeCallbacks(browserDetectRunnable)
         if (::blockingOverlay.isInitialized) blockingOverlay.dismiss()
         instance = null
         DebugLog.add("🔴 Service destroyed")
